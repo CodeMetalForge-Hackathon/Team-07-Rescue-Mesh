@@ -1,0 +1,5 @@
+pi/logs/
+__pycache__/
+*.pyc
+build/
+.DS_Store

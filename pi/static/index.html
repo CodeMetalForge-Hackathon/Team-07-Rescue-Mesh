@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Team 7 · Rescue Mesh</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --panel2: #1c232c; --line: #2a323d;
+    --text: #e6edf3; --dim: #8b96a3; --accent: #4aa3ff;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --base: #4aa3ff; --dep: #3fb950; --car: #ff9f43;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .3px; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--panel2);
+    color: var(--dim); white-space: nowrap; }
+  .pill.ok { color: var(--ok); } .pill.bad { color: var(--bad); } .pill.warn { color: var(--warn); }
+  header .spacer { flex: 1; }
+  #alerts:empty { display: none; }
+  .alert { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #3d1418;
+    border-bottom: 1px solid #6e2027; animation: pulse 1.2s ease-in-out infinite alternate; }
+  .alert.found { background: #13321d; border-color: #1f5f33; animation: none; }
+  .alert b { font-size: 16px; } .alert .spacer { flex: 1; }
+  @keyframes pulse { from { background: #3d1418; } to { background: #5c1a20; } }
+  nav { display: flex; background: var(--panel); border-bottom: 1px solid var(--line); }
+  nav button { flex: 1; padding: 11px 0; background: none; border: 0; color: var(--dim);
+    font: inherit; font-weight: 600; border-bottom: 2px solid transparent; }
+  nav button.on { color: var(--text); border-bottom-color: var(--accent); }
+  main { flex: 1; overflow: hidden; position: relative; }
+  section { position: absolute; inset: 0; display: none; flex-direction: column; overflow: hidden; }
+  section.on { display: flex; }
+  .scroll { flex: 1; overflow-y: auto; padding: 12px 14px; }
+  button.btn { background: var(--accent); color: #fff; border: 0; border-radius: 10px;
+    padding: 10px 14px; font: inherit; font-weight: 600; }
+  button.btn.ghost { background: var(--panel2); color: var(--text); }
+  button.btn.small { padding: 6px 10px; font-size: 13px; }
+  select, input { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px; font: inherit; min-width: 0; }
+
+  /* chat */
+  .msg { max-width: 82%; margin: 6px 0; padding: 8px 11px; border-radius: 14px; background: var(--panel2); }
+  .msg.out { margin-left: auto; background: #1f3b5c; }
+  .msg.quick { background: #3a2a10; } .msg.quick.help { background: #4a161b; }
+  .msg .meta { font-size: 11px; color: var(--dim); margin-bottom: 2px; }
+  .msg .st { font-size: 11px; color: var(--dim); text-align: right; margin-top: 2px; }
+  .composer { display: flex; gap: 8px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    background: var(--panel); border-top: 1px solid var(--line); }
+  .composer input { flex: 1; }
+  .quickrow { display: flex; gap: 8px; padding: 8px 14px 0; background: var(--panel); flex-wrap: wrap; }
+  .empty { color: var(--dim); text-align: center; margin-top: 40px; }
+
+  /* network */
+  .chain { display: flex; flex-direction: column; gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
+  .card.stale { opacity: .65; } .card.lost { opacity: .45; border-style: dashed; }
+  .card .top { display: flex; align-items: center; gap: 8px; }
+  .card .name { font-weight: 700; font-size: 17px; }
+  .role { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; color: #0e1116; }
+  .role.B { background: var(--base); } .role.D { background: var(--dep); } .role.C { background: var(--car); }
+  .role.U { background: var(--dim); }
+  .card .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+  .card .k { font-size: 11px; color: var(--dim); } .card .v { font-size: 16px; font-weight: 600; }
+  .bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 16px; vertical-align: middle; }
+  .bars i { width: 5px; background: var(--line); border-radius: 1px; }
+  .bars i.on { background: var(--ok); } .bars.mid i.on { background: var(--warn); } .bars.low i.on { background: var(--bad); }
+  .arrow { text-align: center; color: var(--dim); font-size: 13px; margin: -4px 0; }
+  .linkmeter { margin-top: 10px; padding: 8px; border-radius: 10px; background: var(--panel2); }
+
+  /* map */
+  #mapwrap { flex: 1; position: relative; }
+  #map { width: 100%; height: 100%; display: block; touch-action: none; }
+  .maplegend { position: absolute; left: 10px; bottom: 10px; font-size: 12px; color: var(--dim);
+    background: rgba(14,17,22,.85); padding: 8px 10px; border-radius: 10px; line-height: 1.6; }
+  .calib { display: flex; gap: 6px; padding: 10px 14px; background: var(--panel);
+    border-top: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
+  .calib select { padding: 7px; } .calib input { width: 70px; padding: 7px; }
+
+  /* log */
+  .logline { font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--dim); white-space: pre-wrap;
+    word-break: break-all; }
+  .logline b { color: var(--text); font-weight: 500; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛟 Team 7 Rescue Mesh</h1>
+  <span class="spacer"></span>
+  <span id="me" class="pill">—</span>
+  <span id="conn" class="pill bad">connecting…</span>
+</header>
+<div id="alerts"></div>
+<nav>
+  <button data-tab="chat" class="on">Chat</button>
+  <button data-tab="net">Network</button>
+  <button data-tab="map">Map</button>
+  <button data-tab="log">Log</button>
+</nav>
+<main>
+  <section id="tab-chat" class="on">
+    <div id="msgs" class="scroll"><div class="empty">No messages yet</div></div>
+    <div class="quickrow">
+      <button class="btn small ghost" data-quick="OK">✅ OK</button>
+      <button class="btn small ghost" data-quick="RETURN">↩️ RETURN</button>
+      <button class="btn small ghost" data-quick="HELP">🆘 HELP</button>
+      <button class="btn small ghost" data-quick="FOUND">🧍 FOUND</button>
+    </div>
+    <form class="composer" id="composer">
+      <select id="dst"><option value="*">Everyone</option></select>
+      <input id="text" maxlength="140" placeholder="Message (plain text, 140 max)" autocomplete="off">
+      <button class="btn" type="submit">Send</button>
+    </form>
+  </section>
+
+  <section id="tab-net">
+    <div class="scroll"><div id="chain" class="chain"></div></div>
+  </section>
+
+  <section id="tab-map">
+    <div id="mapwrap">
+      <svg id="map"></svg>
+      <div class="maplegend">
+        <span style="color:var(--base)">●</span> base &nbsp;
+        <span style="color:var(--dep)">●</span> relay &nbsp;
+        <span style="color:var(--car)">●</span> carried<br>
+        dashed ring = only one link, direction unknown<br>
+        distances estimated from signal strength (rough)
+      </div>
+    </div>
+    <div class="calib">
+      <span class="k" style="color:var(--dim);font-size:13px">Calibrate:</span>
+      <select id="calA"></select><select id="calB"></select>
+      <span style="color:var(--dim);font-size:13px">are</span>
+      <input id="calM" type="number" value="1" min="0.1" step="0.1">
+      <span style="color:var(--dim);font-size:13px">m apart</span>
+      <button class="btn small" id="calGo">Set</button>
+      <span id="calInfo" style="color:var(--dim);font-size:12px"></span>
+    </div>
+  </section>
+
+  <section id="tab-log">
+    <div id="log" class="scroll"></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let S = null;            // latest state from the server
+let msgCount = -1;
+const trails = {};       // carried-node trails on the map
+
+// ---------- tabs
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === "tab-" + b.dataset.tab));
+  if (b.dataset.tab === "map") drawMap();
+});
+
+// ---------- helpers
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ago = sec => sec == null ? "never" : sec < 60 ? Math.round(sec) + "s ago" : Math.round(sec / 60) + "m ago";
+const time = t => new Date(t * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+const roleName = r => ({B: "BASE", D: "RELAY", C: "CARRIED"}[r] || "?");
+function bars(rssi, snr) {
+  if (rssi == null) return '<span class="k">—</span>';
+  // margin above the SF7 sensitivity floor (~-123 dBm), 4 bars
+  const m = rssi + 123, n = m > 45 ? 4 : m > 30 ? 3 : m > 15 ? 2 : m > 5 ? 1 : 0;
+  const cls = n >= 3 ? "" : n === 2 ? "mid" : "low";
+  return `<span class="bars ${cls}">${[1,2,3,4].map(i => `<i class="${i <= n ? "on" : ""}" style="height:${4*i}px"></i>`).join("")}</span>`;
+}
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  return r.json();
+}
+
+// ---------- live updates (Server-Sent Events, with polling fallback)
+function connect() {
+  const es = new EventSource("/events");
+  es.onmessage = e => render(JSON.parse(e.data));
+  es.onerror = () => { $("#conn").textContent = "reconnecting…"; $("#conn").className = "pill bad"; };
+}
+connect();
+fetch("/api/state").then(r => r.json()).then(render).catch(() => {});
+
+function render(st) {
+  S = st;
+  $("#conn").textContent = st.connected ? "box connected" : "box NOT connected";
+  $("#conn").className = "pill " + (st.connected ? "ok" : "bad");
+  $("#me").textContent = st.me ? "this box: " + st.me : "—";
+  renderAlerts(); renderChat(); renderNet(); renderLog(); updateSelectors();
+  if ($("#tab-map").classList.contains("on")) drawMap();
+}
+
+// ---------- alerts
+function renderAlerts() {
+  $("#alerts").innerHTML = S.alerts.map(a => `
+    <div class="alert ${a.code === "FOUND" ? "found" : ""}">
+      <span style="font-size:22px">${a.code === "HELP" ? "🆘" : "🧍"}</span>
+      <div><b>${esc(a.src)}: ${a.code === "HELP" ? "NEEDS HELP" : "FOUND A PERSON"}</b>
+      <div style="font-size:12px;color:#ffb3b3">${time(a.t)} · ${ago(S.now - a.t)}</div></div>
+      <span class="spacer"></span>
+      <button class="btn small" onclick="ack(${a.id})">Acknowledge</button>
+    </div>`).join("");
+}
+window.ack = id => post("/api/ack", {id});
+
+// ---------- chat
+function renderChat() {
+  const box = $("#msgs");
+  const sig = S.messages.length + ":" + S.messages.map(m => m.status || "").join("");
+  if (sig === msgCount) return;
+  msgCount = sig;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  if (!S.messages.length) { box.innerHTML = '<div class="empty">No messages yet</div>'; return; }
+  box.innerHTML = S.messages.map(m => {
+    const q = m.quick || (m.kind === "quick");
+    const cls = ["msg", m.dir, q ? "quick" : "", (m.quick === "HELP" || m.text === "[HELP]") ? "help" : ""].join(" ");
+    const who = m.dir === "out" ? `you → ${m.dst === "*" ? "everyone" : m.dst}` : `${m.src}${m.dst !== "*" ? " → " + m.dst : ""}`;
+    const st = m.dir === "out" ? ({queued: "sending…", sent: "✓ sent", delivered: "✓✓ delivered" + (m.by ? " (" + m.by + ")" : "")}[m.status] || "") : "";
+    return `<div class="${cls}"><div class="meta">${esc(who)} · ${time(m.t)}</div>${esc(m.text)}${st ? `<div class="st">${st}</div>` : ""}</div>`;
+  }).join("");
+  if (atBottom || msgCount === -1) box.scrollTop = box.scrollHeight;
+}
+$("#composer").onsubmit = async e => {
+  e.preventDefault();
+  const text = $("#text").value.trim();
+  if (!text) return;
+  $("#text").value = "";
+  await post("/api/send", {dst: $("#dst").value, text});
+  setTimeout(() => $("#msgs").scrollTop = 1e9, 100);
+};
+document.querySelectorAll("[data-quick]").forEach(b => b.onclick = () =>
+  post("/api/quick", {dst: $("#dst").value, code: b.dataset.quick}));
+
+// ---------- network
+function sortedNodes() {
+  const order = n => n.role === "B" ? -1 : n.role === "D" ? (n.chain ?? 50) : n.role === "C" ? 100 : 200;
+  return [...S.nodes].sort((a, b) => order(a) - order(b) || a.id.localeCompare(b.id));
+}
+function renderNet() {
+  const nodes = sortedNodes();
+  if (!nodes.length) { $("#chain").innerHTML = '<div class="empty">No boxes heard yet</div>'; return; }
+  $("#chain").innerHTML = nodes.map((n, i) => {
+    const r = ["B", "D", "C"].includes(n.role) ? n.role : "U";
+    const temp = n.temp == null ? "—" : n.temp.toFixed(1) + "°C" + (n.flag === "S" ? "*" : "");
+    const rh = n.rh == null ? "—" : n.rh.toFixed(0) + "%";
+    const route = n.me ? "this box" : n.via && n.via !== n.id ? "via " + esc(n.via) : n.via ? "direct" : "—";
+    const quick = n.quick ? `<div class="k" style="margin-top:8px">last status: <b style="color:${n.quick.code === "HELP" ? "var(--bad)" : "var(--text)"}">${n.quick.code}</b> · ${ago(S.now - n.quick.t)}</div>` : "";
+    const lm = n.link ? `<div class="linkmeter">Link to <b>${esc(n.link.tail)}</b>: ${n.link.margin.toFixed(0)} dB margin ·
+       <b style="color:${n.link.state === "OK" ? "var(--ok)" : n.link.state === "WARN" ? "var(--warn)" : "var(--bad)"}">${n.link.state}</b></div>` : "";
+    return `${i ? '<div class="arrow">⋮</div>' : ""}
+    <div class="card ${n.status}">
+      <div class="top"><span class="name">${esc(n.id)}</span>
+        <span class="role ${r}">${roleName(n.role)}${n.role === "D" && n.chain != null ? " #" + n.chain : ""}</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="pill ${n.status === "ok" ? "ok" : n.status === "stale" ? "warn" : "bad"}">${n.me ? "connected" : ago(n.age)}</span></div>
+      <div class="grid">
+        <div><div class="k">Temp</div><div class="v">${temp}</div></div>
+        <div><div class="k">Humidity</div><div class="v">${rh}</div></div>
+        <div><div class="k">Signal ${n.rssi != null ? n.rssi + " dBm" : ""}</div><div class="v">${n.me ? "—" : bars(n.rssi, n.snr)}</div></div>
+      </div>
+      <div class="k" style="margin-top:6px">${route}</div>${quick}${lm}
+    </div>`;
+  }).join("");
+}
+
+// ---------- selectors (chat destination + calibration)
+function updateSelectors() {
+  const ids = S.nodes.map(n => n.id).sort();
+  const fill = (sel, extra) => {
+    const cur = sel.value, opts = (extra || []).concat(ids.map(i => [i, i]));
+    const html = opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+    if (sel.dataset.h !== html) { sel.innerHTML = html; sel.dataset.h = html; if ([...sel.options].some(o => o.value === cur)) sel.value = cur; }
+  };
+  fill($("#dst"), [["*", "Everyone"]]);
+  fill($("#calA")); fill($("#calB"));
+  if ($("#calB").selectedIndex === 0 && ids.length > 1 && !$("#calB").dataset.touched) $("#calB").selectedIndex = 1;
+  $("#calInfo").textContent = `model: ${S.calib.p0} dBm @1 m, n=${S.calib.n}`;
+}
+$("#calB").onchange = () => $("#calB").dataset.touched = 1;
+$("#calGo").onclick = async () => {
+  const r = await post("/api/calibrate", {a: $("#calA").value, b: $("#calB").value, meters: +$("#calM").value});
+  $("#calInfo").textContent = r.error ? r.error : `calibrated: ${r.calib.p0} dBm @1 m`;
+};
+
+// ---------- map
+function drawMap() {
+  if (!S) return;
+  const svg = $("#map"), W = svg.clientWidth, H = svg.clientHeight;
+  if (!W || !H) return;
+  const P = S.positions, nodes = S.nodes.filter(n => P[n.id]);
+  const deg = (S.map && S.map.degree) || {}, anchor = S.map && S.map.anchor;
+  // remember recent positions of carried boxes
+  nodes.forEach(n => { if (n.role === "C") { const t = trails[n.id] = trails[n.id] || [];
+    const p = P[n.id], l = t[t.length - 1]; if (!l || Math.hypot(l[0] - p[0], l[1] - p[1]) > 0.5) t.push([...p]); if (t.length > 40) t.shift(); } });
+  // fit everything on screen
+  let maxR = 5;
+  nodes.forEach(n => maxR = Math.max(maxR, Math.hypot(...P[n.id])));
+  Object.values(S.map.dist || {}).forEach(d => maxR = Math.max(maxR, Math.min(d, 400)));
+  const scale = (Math.min(W, H) / 2 - 40) / maxR;
+  const cx = W / 2, cy = H / 2;
+  const X = p => cx + p[0] * scale, Y = p => cy - p[1] * scale;
+  let g = "";
+  // distance rings
+  const step = [1, 2, 5, 10, 20, 50, 100, 200, 500].find(s => maxR / s <= 5) || 1000;
+  for (let r = step; r <= maxR * 1.05; r += step)
+    g += `<circle cx="${cx}" cy="${cy}" r="${r * scale}" fill="none" stroke="#222a33" />
+          <text x="${cx + r * scale + 3}" y="${cy - 3}" fill="#4b5563" font-size="11">${r} m</text>`;
+  g += `<text x="${cx}" y="16" fill="#4b5563" font-size="11" text-anchor="middle">▲ forward (toward relay #1)</text>`;
+  // links
+  let linkIdx = 0;
+  S.links.forEach(l => {
+    if (!P[l.a] || !P[l.b]) return;
+    const col = l.rssi > -80 ? "#3fb950" : l.rssi > -100 ? "#d29922" : "#f85149";
+    const d = S.map.dist && (S.map.dist[l.a + "|" + l.b] ?? S.map.dist[l.b + "|" + l.a]);
+    const x1 = X(P[l.a]), y1 = Y(P[l.a]), x2 = X(P[l.b]), y2 = Y(P[l.b]);
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1, side = (l.a < l.b ? 1 : -1) * (linkIdx++ % 2 ? 1 : -1);
+    const mx = (x1 + x2) / 2 - (y2 - y1) / len * 14 * side, my = (y1 + y2) / 2 + (x2 - x1) / len * 14 * side;
+    g += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="2" opacity=".75"/>
+          <text x="${mx}" y="${my}" fill="#8b96a3" font-size="11" text-anchor="middle">${d ? "≈" + d.toFixed(0) + " m · " : ""}${Math.round(l.rssi)} dBm</text>`;
+  });
+  // uncertainty rings for boxes with a single link
+  nodes.forEach(n => {
+    if (n.id === anchor || (deg[n.id] || 0) !== 1) return;
+    const l = S.links.find(l => l.a === n.id || l.b === n.id); if (!l) return;
+    const other = l.a === n.id ? l.b : l.a, d = S.map.dist[l.a + "|" + l.b] ?? S.map.dist[l.b + "|" + l.a];
+    if (P[other] && d) g += `<circle cx="${X(P[other])}" cy="${Y(P[other])}" r="${d * scale}" fill="none" stroke="#ff9f43" stroke-dasharray="5 5" opacity=".5"/>`;
+  });
+  // trails
+  Object.entries(trails).forEach(([id, t]) => { if (t.length > 1)
+    g += `<polyline points="${t.map(p => X(p) + "," + Y(p)).join(" ")}" fill="none" stroke="#ff9f43" stroke-width="1.5" opacity=".35"/>`; });
+  // nodes
+  nodes.forEach(n => {
+    const col = n.role === "B" ? "#4aa3ff" : n.role === "D" ? "#3fb950" : n.role === "C" ? "#ff9f43" : "#8b96a3";
+    const p = P[n.id], help = n.quick && n.quick.code === "HELP" && S.now - n.quick.t < 300;
+    const faded = n.status !== "ok" || (n.id !== anchor && (deg[n.id] || 0) < 2) ? .6 : 1;
+    if (help) g += `<circle cx="${X(p)}" cy="${Y(p)}" r="20" fill="none" stroke="#f85149" stroke-width="3"><animate attributeName="r" values="12;26;12" dur="1.2s" repeatCount="indefinite"/></circle>`;
+    g += `<circle cx="${X(p)}" cy="${Y(p)}" r="9" fill="${col}" opacity="${faded}" stroke="#0e1116" stroke-width="2"/>
+          <text x="${X(p) + 13}" y="${Y(p) + 4}" fill="#e6edf3" font-size="13" font-weight="700">${esc(n.id)}</text>
+          <text x="${X(p) + 13}" y="${Y(p) + 18}" fill="#8b96a3" font-size="11">${n.temp != null ? n.temp.toFixed(1) + "°C " : ""}${n.status !== "ok" ? n.status : ""}</text>`;
+  });
+  if (!nodes.length) g += `<text x="${cx}" y="${cy}" fill="#8b96a3" text-anchor="middle">Waiting for neighbour reports…</text>`;
+  svg.innerHTML = g;
+}
+window.addEventListener("resize", drawMap);
+
+// ---------- log
+function renderLog() {
+  const box = $("#log"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.innerHTML = S.log.map(l => {
+    const tag = l.line.split(",")[0];
+    return `<div class="logline">${time(l.t)} ${/^[A-Z]{2,4}$/.test(tag) ? "<b>" + esc(tag) + "</b>" + esc(l.line.slice(tag.length)) : esc(l.line)}</div>`;
+  }).join("");
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+</script>
+</body>
+</html>
