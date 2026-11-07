@@ -218,32 +218,61 @@ class State:
                     ang = random.uniform(0, 2 * math.pi)
                     pos[u] = [pos[v][0] + d * math.cos(ang), pos[v][1] + d * math.sin(ang)]
         scale = max(dist.values()) if dist else 1.0
-        for it in range(400):
-            lr = 0.05 * (1 - it / 400) + 0.005
-            grad = {i: [0.0, 0.0] for i in ids}
-            for (a, b), d in dist.items():
-                dx, dy = pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]
-                cur = math.hypot(dx, dy) or 1e-6
-                g = (cur - d) / cur / max(d, 1.0)       # relative error: fair to short & long links
-                grad[a][0] += g * dx; grad[a][1] += g * dy
-                grad[b][0] -= g * dx; grad[b][1] -= g * dy
-            # unlinked pairs: they can't hear each other, so they shouldn't sit on top of each other
-            for x in range(len(ids)):
-                for y in range(x + 1, len(ids)):
-                    a, b = ids[x], ids[y]
-                    if (a, b) in dist or a not in linked or b not in linked:
-                        continue
+
+        def descend(pos):
+            for it in range(400):
+                lr = 0.05 * (1 - it / 400) + 0.005
+                grad = {i: [0.0, 0.0] for i in ids}
+                for (a, b), d in dist.items():
                     dx, dy = pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]
                     cur = math.hypot(dx, dy) or 1e-6
-                    if cur < scale:
-                        g = (cur - scale) / cur / scale * 0.3
-                        grad[a][0] += g * dx; grad[a][1] += g * dy
-                        grad[b][0] -= g * dx; grad[b][1] -= g * dy
-            for i in ids:
-                if i == anchor or i not in linked:
-                    continue
-                pos[i][0] -= lr * scale * grad[i][0]
-                pos[i][1] -= lr * scale * grad[i][1]
+                    g = (cur - d) / cur / max(d, 1.0)       # relative error: fair to short & long links
+                    grad[a][0] += g * dx; grad[a][1] += g * dy
+                    grad[b][0] -= g * dx; grad[b][1] -= g * dy
+                # unlinked pairs can't hear each other, so they shouldn't sit on top of each other
+                for x in range(len(ids)):
+                    for y in range(x + 1, len(ids)):
+                        a, b = ids[x], ids[y]
+                        if (a, b) in dist or a not in linked or b not in linked:
+                            continue
+                        dx, dy = pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]
+                        cur = math.hypot(dx, dy) or 1e-6
+                        if cur < scale:
+                            g = (cur - scale) / cur / scale * 0.3
+                            grad[a][0] += g * dx; grad[a][1] += g * dy
+                            grad[b][0] -= g * dx; grad[b][1] -= g * dy
+                max_step = 0.1 * scale                  # never move a box more than 10% of the map per step
+                for i in ids:
+                    if i == anchor or i not in linked:
+                        continue
+                    sx, sy = lr * scale * grad[i][0], lr * scale * grad[i][1]
+                    m = math.hypot(sx, sy)
+                    if m > max_step:
+                        sx, sy = sx * max_step / m, sy * max_step / m
+                    pos[i][0] -= sx
+                    pos[i][1] -= sy
+            return pos
+
+        def stress(pos):
+            return sum(((math.hypot(pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]) - d) / max(d, 1.0)) ** 2
+                       for (a, b), d in dist.items())
+
+        # A straight line is a "flat spot" for this kind of solver: once every box is
+        # collinear, the steps can only slide them along the line. So start from several
+        # positions (previous map nudged sideways + random layouts) and keep the best fit.
+        starts = []
+        for k in range(4):
+            jit = 0.08 * scale if k == 0 else scale
+            base = pos if k == 0 else {i: [random.uniform(-1, 1) * scale, random.uniform(-1, 1) * scale] for i in ids}
+            starts.append({i: ([0.0, 0.0] if i == anchor else
+                               [base[i][0] + random.gauss(0, jit * (0.3 if k == 0 else 0.1)),
+                                base[i][1] + random.gauss(0, jit * (0.3 if k == 0 else 0.1))])
+                           for i in ids})
+        results = [descend(st) for st in starts]
+        results = [r for r in results if all(math.isfinite(v) for p in r.values() for v in p)]
+        if not results:
+            return
+        pos = min(results, key=stress)
         # Distances can't tell rotation or mirror-image apart, so fix them:
         # rotate so the first relay (chain 1, else any linked node) points "up" (forward),
         # then pick the mirror image closest to the previous map so it doesn't flip.
@@ -292,6 +321,7 @@ class State:
                 "messages": self.messages[-150:], "alerts": [a for a in self.alerts if not a["acked"]],
                 "log": self.log[-60:], "calib": self.calib, "positions": self.positions,
                 "map": getattr(self, "map_info", {}),
+                "sim_truth": getattr(self, "sim_truth", None),
             }
 
 
@@ -397,9 +427,10 @@ class SimLink:
             time.sleep(1.0)
             tick += 1
             t = time.time() - self.t0
-            # C1 walks out to ~70 m along a curve and back, period 120 s
+            # C1 walks from R1 down a "side corridor" (a 90-degree turn) and back, period 120 s
             phase = (math.sin(2 * math.pi * t / 120 - math.pi / 2) + 1) / 2
-            self.true["C1"] = (24 + 45 * phase, 6 + 20 * math.sin(math.pi * phase))
+            self.true["C1"] = (24 - 10 * phase, 6 + 40 * phase)
+            STATE.sim_truth = {k: list(v) for k, v in self.true.items()}
             for k in self.temps:
                 self.temps[k] += random.uniform(-0.05, 0.05)
             # outbound commands from the web app
