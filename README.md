@@ -1,41 +1,38 @@
 # Team 7 – Rescue Mesh (Code Metal Forge 2026)
 
-A GPS-free, cell-free communication network for search and rescue. Responders carry LoRa **boxes**
-and drop them as relays as they move into a building or rubble. The boxes pass texts, OK / HELP
-alerts and sensor readings along the chain, back to a **base station** laptop that shows chat,
-alerts, the network and a rough map, all worked out from the radio links themselves.
-Any phone can join a box's own Wi-Fi to read and send messages, with no app and no internet.
+A GPS-free, cell-free communication network for search and rescue. Responders carry LoRa **nodes**
+and drop them as relays as they move into a forest, desert, mountain, building, or rubble. 
+The nodes pass texts, OK / HELP alerts and sensor readings along the chain, back to a **base station** 
+laptop that shows chat, alerts, the network and a rough map, all worked out from the radio links themselves. 
+Any phone can join a nodes's own Wi-Fi to read and send messages, with no app and no internet.
 
 ```
- [BASE box + laptop] <--LoRa--> [BRAVO, dropped] <--LoRa--> [CHARLIE, dropped] <--LoRa--> [ALPHA, carried]
-   chat, map, alerts             relays everything            relays everything           "WEAK LINK - DEPLOY A RELAY"
-                                 phone joins Team7-BRAVO                                     phone joins Team7-ALPHA
+  [ALPHA, dropped] <--LoRa--> [CHARLIE, dropped] <--LoRa--> [BRAVO, carried]
+  relays everything           relays everything           "WEAK LINK - DEPLOY A RELAY"
+  phone joins Team7-ALPHA                                  phone joins Team7-BRAVO
 ```
 
 ## What it does
-- **Texts and OK / HELP** between any boxes, from the box's buttons, a phone, or the base laptop. Max 60 characters.
-- **Relay over several hops:** every box repeats each packet once (up to 3 repeats), so a box that can't
-  hear the base still reaches it through the boxes in between.
-- **Confirmations (✓):** the receiving box confirms. For "everyone" messages the first box to answer is enough.
+- **Texts and OK / HELP** between any nodes, from the nodes's buttons, a phone. Max 60 characters.
+- **Relay over several hops:** every node repeats each packet once (up to 3 repeats), so a node that can't
+  hear the repeaters still reaches it through the nodes in between.
+- **Confirmations (✓):** the receiving node confirms. For "everyone" messages the first node to answer is enough.
   If no ✓ comes after 5 s, the sender tries once more.
-- **Catch-up sync:** each box keeps its last 6 messages. When a box comes back into range, is switched on, or
+- **Catch-up sync:** each node keeps its last 6 messages. When a node comes back into range, is switched on, or
   reboots, its neighbours re-send what it missed. A HELP pressed out of range gets delivered when you walk back.
-- **CARRY / DEPLOY switch:** a carried box watches its link to the chain and shows **WEAK LINK – DEPLOY A RELAY**
+- **CARRY / DEPLOY switch:** a carried node watches its link to the chain and shows **WEAK LINK – DEPLOY A RELAY**
   when it drops to about 30 %.
-- **LED bar** = signal strength to the strongest box heard.
+- **LED bar** = signal strength to the strongest node heard.
 - **Packet key:** every packet is signed with a team key (SipHash-2-4). Packets from radios without the key, like a
-  faked HELP, are ignored. Messages are authenticated, not encrypted.
-- **Watchdog:** a box whose radio, buttons, screen or main logic freezes reboots itself within 8 s.
-- **Phone page:** each box's screen board makes an open Wi-Fi network `Team7-<box>`, and the chat page opens by itself.
-- **Base station app:** chat, alerts with an *Acknowledge* button ("help is coming" on the box), network view, and a
-  minimap built from signal strengths between all boxes.
+  faked HELP, are ignored.
+- **Watchdog:** a node whose radio, buttons, screen or main logic freezes reboots itself within 8 s.
+- **Phone page:** each node's screen board makes an open Wi-Fi network `Team7-<node>`, and the chat page opens by itself.
 
-## Hardware (per box)
+## Hardware (per node)
 - **Radio board:** Adafruit Feather RP2040 RFM95 (915 MHz), or Feather M0 RFM95 (#3178). Same firmware on both.
 - **Screen + phone Wi-Fi:** Adafruit ESP32-S3 Reverse TFT Feather, connected over I2C.
 - SHT41 temperature/humidity sensor, Grove LED Bar v2.1, Grove buzzer, Grove switch (CARRY / DEPLOY),
   2 Grove LED buttons (red = HELP, blue = OK). Wire antenna, 78 mm.
-- **Base:** any box with `IS_BASE 1`, plugged into a laptop or Raspberry Pi 5 over USB.
 
 | Module | RP2040 Feather | M0 Feather |
 |---|---|---|
@@ -46,18 +43,18 @@ Any phone can join a box's own Wi-Fi to read and send messages, with no app and 
 | Blue button: LED / button | D24 / D25 | **D1 / D0** |
 | SHT41 + ESP32 screen (I2C) | STEMMA QT | SDA / SCL pins |
 
-Grove modules are powered from **3V** and GND, never from USB or BAT.
+Grove modules are powered from **3.3V** and GND, never from USB or BAT.
 
 ## Repo layout
 | Path | What |
 |---|---|
-| `arduino/rtos/rtos_main/` | **The box firmware** (Arduino IDE). FreeRTOS on the RP2040, plain loop on the M0. See `arduino/rtos/README.md` |
+| `arduino/rtos/rtos_main/` | **The node firmware** (Arduino IDE). FreeRTOS on the RP2040, plain loop on the M0. See `arduino/rtos/README.md` |
 | `arduino/display_esp32/` | Screen + phone Wi-Fi page, for the ESP32-S3 Reverse TFT Feather |
-| `arduino/rtos/rtos_test/` | Small FreeRTOS check on one box (blinking tasks, button → buzzer, LED bar) |
-| `arduino/hw_test/` | Quick test of the LED bar, buzzer, switch and buttons on one box |
+| `arduino/rtos/rtos_test/` | Small FreeRTOS check on one node (blinking tasks, button → buzzer, LED bar) |
+| `arduino/hw_test/` | Quick test of the LED bar, buzzer, switch and buttons on one node |
 | `arduino/lora_sensor_node_test/` | The first (pre-RTOS) firmware, kept for reference |
 | `pi/` | Base-station web app (Python 3 + pyserial). Has a `--sim` mode |
-| `PROTOCOL.md` | Packet format over the air, and the serial protocol between box and laptop |
+| `PROTOCOL.md` | Packet format over the air, and the serial protocol between node and laptop |
 | `tests/` | Laptop tests for the packet format and the key |
 
 ## Setup
@@ -69,8 +66,8 @@ Grove modules are powered from **3V** and GND, never from USB or BAT.
    Then install **Raspberry Pi Pico/RP2040/RP2350** (Earle Philhower) and **Adafruit SAMD Boards**.
 2. Libraries: **LoRa** (Sandeep Mistry), **Adafruit SHT4x**. The LED bar driver is built in.
 3. **Team key:** `arduino/rtos/rtos_main/key.h` is secret and not in git. Get it from a teammate, or copy
-   `key.example.h` → `key.h` and put in 16 new random bytes. **Every box needs the same key.**
-4. Open `arduino/rtos/rtos_main/rtos_main.ino` and set `NODE_ID` (different for every box) and `IS_BASE` (1 only on the base box).
+   `key.example.h` → `key.h` and put in 16 new random bytes. **Every node needs the same key.**
+4. Open `arduino/rtos/rtos_main/rtos_main.ino` and set `NODE_ID` (different for every node).
 5. Board settings:
    - **RP2040:** board *Adafruit Feather RP2040 RFM*, **Tools → Operating System → FreeRTOS SMP**.
    - **M0:** board *Adafruit Feather M0 (SAMD21)*.
@@ -83,15 +80,8 @@ Grove modules are powered from **3V** and GND, never from USB or BAT.
 2. Board *Adafruit Feather ESP32-S3 Reverse TFT*. Upload `arduino/display_esp32`.
 3. If no port shows up: hold D0, tap RESET, release D0, then upload.
 
-## Base station
-```bash
-cd pi && python3 base_station.py --sim   # try it without hardware -> http://localhost:8000
-python3 base_station.py                  # with the base box plugged in
-```
-For the Pi hotspot and auto-start, see `pi/README.md`.
-
 ## Phones
-Join the Wi-Fi network **`Team7-<box name>`** (for example `Team7-ALPHA`). The chat page opens by itself, or go to
+Join the Wi-Fi network **`Team7-<node name>`** (for example `Team7-ALPHA`). The chat page opens by itself, or go to
 **http://192.168.4.1**. On an iPhone, choose "Use Without Internet" if asked.
 
 ## Tests
@@ -101,14 +91,6 @@ g++ -std=c++17 -Wall -I arduino/lora_sensor_node_test tests/test_sensornet.cpp -
 ```
 
 ## Status
-- **Working on hardware:** 4 boxes (3× RP2040, 1× M0) with screens. HELP / OK / texts with confirmations, phone page,
-  base laptop app, CARRY weak-link warning, LED bar signal meter.
-- **Tested in simulation** (the firmware compiled on a laptop with fake radios): relay over 3 hops, catch-up after
-  out-of-range and reboot, packet loss and collisions (✓ rate 4/8 before the confirmation fix → 7–8/8 after),
-  wrong-key and faked packets rejected, watchdog reboot on a frozen part.
-- **Next:** listen-before-talk on the radio, encryption on top of the key, battery level in the ping,
-  short voice notes (Codec2, ~7 packets per 10 s of speech).
-
 Versions are git tags: `v1.0` (first LoRa link + screen), `v1.1` (pings, signal bar, confirmations),
 `v1.2` (relay, sync, M0, phone page, key, watchdog).
 
