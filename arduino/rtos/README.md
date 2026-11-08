@@ -1,8 +1,9 @@
-# FreeRTOS firmware (work in progress)
+# Box firmware (`rtos_main`, v1.2)
 
-The box firmware is moving to **FreeRTOS**, using the copy built into the Arduino core for
-this board. You don't need to download FreeRTOS, and the separate FreeRTOS-LTS download should
-**not** be added to this repo: it targets the Pico SDK/CMake toolchain and is 115 MB.
+This is the firmware for every box. On the RP2040 it runs on **FreeRTOS**, using the copy built into the
+Arduino core for this board. On the M0 the same sketch runs as a plain loop (see below).
+You don't need to download FreeRTOS, and the separate FreeRTOS-LTS download should **not** be added to this
+repo: it targets the Pico SDK/CMake toolchain and is 115 MB.
 
 ## Arduino IDE settings
 **RP2040 boxes (ALPHA, BRAVO, BASE)**
@@ -29,7 +30,7 @@ this board. You don't need to download FreeRTOS, and the separate FreeRTOS-LTS d
 | Folder | What it is |
 |---|---|
 | `rtos_test/` | Small check of FreeRTOS on one box: two LEDs blinking at different rates (2 tasks), button → queue → buzzer, LED bar animation, and a per-task core/stack report every 5 s. No radio. |
-| `rtos_main/` | The real firmware, being built up step by step. One task per piece of hardware, joined by queues. It already does OK/HELP quick messages, texts from the base shown on the screen (confirmed back automatically), screen pages, CARRY/DEPLOY, sensor broadcasts, and the base-station serial protocol. Set `NODE_ID` (and `IS_BASE` on the Pi's box) for each box. |
+| `rtos_main/` | The box firmware. One task per piece of hardware, joined by queues. OK / HELP and texts with confirmations, relay over several hops, catch-up sync, CARRY / DEPLOY with the weak-link warning, LED bar signal meter, screen and phone page (through the ESP32), sensor readings, packet key, watchdog, and the base-station serial protocol. Set `NODE_ID` (and `IS_BASE` on the base box) for each box, and put the team's `key.h` next to it. |
 
 `pins.h` and `ledbar.h` are copied into each sketch folder, because Arduino sketches can't
 share files across folders. **When you change them, change both copies.** (`rtos_test` is RP2040-only.)
@@ -103,7 +104,7 @@ Each box's ESP32 screen board makes an **open Wi-Fi network called `Team7-<box n
 | **Blue** button (button 2, D24/D25) | **OK** to everyone, with the same confirmation feedback |
 | Switch | CARRY / DEPLOY (flip `DEPLOY_LEVEL` if it's backwards) |
 | LED bar | **Signal strength** of the strongest box heard (10 = strong). Nobody heard = only the first (red) segment. Set `BAR_RED_FIRST 0` if your bar is mounted the other way round. |
-| Buzzer | 1 beep sent / confirmed · 2 beeps text received · 3 beeps HELP received · no reply = no beep (screen + fast LED only) · **rapid bursts = CARRY mode with a weak link: deploy a relay** |
+| Buzzer | 1 beep sent / confirmed · 2 beeps text received · 3 beeps HELP received · no reply = no beep (screen + fast LED only) · the CARRY weak-link warning is silent (screen only, see below) |
 
 - **Silent ping:** every 30 s each box sends a short ping with its role and temperature. There's no beep or
   message. It keeps the LED bar, the screen's box list and the base app's network view up to date.
@@ -113,9 +114,11 @@ Each box's ESP32 screen board makes an **open Wi-Fi network called `Team7-<box n
   No ✓ after 5 s → the box sends the message **once more**. Boxes that already have it don't show it again, they just confirm.
   Still nothing at 10 s → "no reply" (screen + fast LED, no beep).
   When the base operator presses *Acknowledge* in the app, the box shows "HELP acknowledged - help is coming".
-- **CARRY alarm:** when the link to the deployed boxes or base falls to 30 % or below, the box beeps rapidly and shows DEPLOY A RELAY.
-  It stops at 40 %, or when you switch to DEPLOY. Signal readings are averaged, and with 30 s pings
-  the alarm can lag up to about a minute behind someone walking. `PING_EVERY_MS` is the setting that controls this.
+- **CARRY warning:** when the link to the deployed boxes or base falls to 30 % or below, the screen shows a blinking
+  **WEAK LINK / DEPLOY A RELAY** banner (on the phone page too). It's silent: the rapid beeping is switched off in `housekeeping()`
+  (the commented-out `ui(UI_ALARM, 1)` line). Remove the `//` to bring the beeping back.
+  It clears at 40 %, or when you switch to DEPLOY. Signal readings are averaged, and with 30 s pings
+  the warning can lag up to about a minute behind someone walking. `PING_EVERY_MS` is the setting that controls this.
 
 ## Relay and catch-up sync (v1.2)
 - **Relay:** every box repeats each packet the first time it hears it, after a random 0.1–0.6 s wait.
@@ -164,7 +167,7 @@ sensor  task (prio 1) --events-->      |        --packets-----> radio task (prio
    (`delayMicroseconds()` doesn't yield, so keep it to microseconds.)
 4. **Print with `logf()`.** It takes a mutex so lines from different tasks don't get mixed together.
 
-## Plan: features to move over from `../lora_sensor_node`, one at a time
+## Feature checklist (moved over from the first firmware, `../lora_sensor_node_test`, and beyond)
 - [x] sensor packets (SN1), text (MS1), quick messages (QM1), acknowledgements (AK1)
 - [x] base-station serial protocol: `ME`, `DATA`, `MSG`, `QM`, `ACK`, `SENT`, and the `TX`/`QM`/`AK` commands
 - [x] screen on the ESP32-S3 TFT: messaging screen, confirmation status, full-screen long messages, HELP alert, warning banner
@@ -173,7 +176,12 @@ sensor  task (prio 1) --events-->      |        --packets-----> radio task (prio
 - [x] each box's role is sent in its ping (the app shows C / D / B)
 - [x] `NBR` neighbour reports for the map (sent inside the ping)
 - [x] M0 (SAMD21) port: same sketch, plain loop instead of FreeRTOS (`minirtos.h`)
-- [ ] CARRY/DEPLOY roles, chain numbering, beacons
-- [ ] LED bar link meter and buzzer range warning
-- [ ] quick messages with acknowledgement, and the base → box message panel
-- [ ] watchdog
+- [x] CARRY / DEPLOY roles in the ping (chain numbering isn't used: the base app works the chain out from the links)
+- [x] LED bar signal meter, CARRY weak-link warning (on the screen; the buzzer part is switched off)
+- [x] quick messages with confirmation, and texts from the base app to one box or everyone
+- [x] watchdog (all parts must check in), packet key (SipHash-2-4 tag on every packet)
+- [x] phone page through the ESP32 screen board (`../display_esp32`)
+- [x] confirmations after relaying, first box answers "everyone" messages, one automatic retry
+
+Next ideas: listen-before-talk on the radio, encryption on top of the key, battery level in the ping,
+a demo setting that makes a box ignore a named box (to force a chain on a table).

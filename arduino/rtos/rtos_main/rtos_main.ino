@@ -72,7 +72,7 @@
 
 // ================================================================== config
 #ifndef NODE_ID
-#define NODE_ID          "CHARLIE"   // different on each box, max 8 chars, no commas
+#define NODE_ID          "BRAVO"   // different on each box, max 8 chars, no commas
 #endif
 #ifndef IS_BASE
 #define IS_BASE          0         // 1 on the box plugged into the Pi

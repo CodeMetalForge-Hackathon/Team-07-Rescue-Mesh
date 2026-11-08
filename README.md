@@ -1,63 +1,116 @@
 # Team 7 – Rescue Mesh (Code Metal Forge 2026)
 
-A GPS-free, cell-free communication network for search and rescue. A responder places
-LoRa **drop boxes** as they move into a building or rubble. The boxes relay
-messages and sensor readings back to a **base station**, and a phone web app shows chat,
-alerts, the chain of boxes and a rough map of where everyone is, all worked out from
-the radio links themselves.
+A GPS-free, cell-free communication network for search and rescue. Responders carry LoRa **boxes**
+and drop them as relays as they move into a building or rubble. The boxes pass texts, OK / HELP
+alerts and sensor readings along the chain, back to a **base station** laptop that shows chat,
+alerts, the network and a rough map, all worked out from the radio links themselves.
+Any phone can join a box's own Wi-Fi to read and send messages, with no app and no internet.
 
 ```
- [BASE + Pi 5] <--LoRa--> [RELAY #1] <--LoRa--> [CARRIED box]
-   phones join the Pi's      dropped box,           buzzes when the link to the
-   Wi-Fi hotspot -> web app  silent relay           last drop gets weak -> drop the next box
+ [BASE box + laptop] <--LoRa--> [BRAVO, dropped] <--LoRa--> [CHARLIE, dropped] <--LoRa--> [ALPHA, carried]
+   chat, map, alerts             relays everything            relays everything           "WEAK LINK - DEPLOY A RELAY"
+                                 phone joins Team7-BRAVO                                     phone joins Team7-ALPHA
 ```
+
+## What it does
+- **Texts and OK / HELP** between any boxes, from the box's buttons, a phone, or the base laptop. Max 60 characters.
+- **Relay over several hops:** every box repeats each packet once (up to 3 repeats), so a box that can't
+  hear the base still reaches it through the boxes in between.
+- **Confirmations (✓):** the receiving box confirms. For "everyone" messages the first box to answer is enough.
+  If no ✓ comes after 5 s, the sender tries once more.
+- **Catch-up sync:** each box keeps its last 6 messages. When a box comes back into range, is switched on, or
+  reboots, its neighbours re-send what it missed. A HELP pressed out of range gets delivered when you walk back.
+- **CARRY / DEPLOY switch:** a carried box watches its link to the chain and shows **WEAK LINK – DEPLOY A RELAY**
+  when it drops to about 30 %.
+- **LED bar** = signal strength to the strongest box heard.
+- **Packet key:** every packet is signed with a team key (SipHash-2-4). Packets from radios without the key, like a
+  faked HELP, are ignored. Messages are authenticated, not encrypted.
+- **Watchdog:** a box whose radio, buttons, screen or main logic freezes reboots itself within 8 s.
+- **Phone page:** each box's screen board makes an open Wi-Fi network `Team7-<box>`, and the chat page opens by itself.
+- **Base station app:** chat, alerts with an *Acknowledge* button ("help is coming" on the box), network view, and a
+  minimap built from signal strengths between all boxes.
 
 ## Hardware (per box)
-- Adafruit Feather RP2040 RFM95 (LoRa, 915 MHz) with a 78 mm wire antenna
-- SHT41 temperature/humidity sensor on the STEMMA QT port
-- Grove LED Bar v2.1 (shows link strength), Grove Buzzer, Grove Switch (CARRY / DEPLOY)
-- Base box: plugged into a Raspberry Pi 5 over USB
+- **Radio board:** Adafruit Feather RP2040 RFM95 (915 MHz), or Feather M0 RFM95 (#3178). Same firmware on both.
+- **Screen + phone Wi-Fi:** Adafruit ESP32-S3 Reverse TFT Feather, connected over I2C.
+- SHT41 temperature/humidity sensor, Grove LED Bar v2.1, Grove buzzer, Grove switch (CARRY / DEPLOY),
+  2 Grove LED buttons (red = HELP, blue = OK). Wire antenna, 78 mm.
+- **Base:** any box with `IS_BASE 1`, plugged into a laptop or Raspberry Pi 5 over USB.
 
-| Module | Feather pin |
-|---|---|
-| LED Bar data / clock | D10 / D9 |
-| Buzzer | D11 |
-| Switch | D12 |
-| Quick-message buttons (planned) | D5, D6, D24 |
+| Module | RP2040 Feather | M0 Feather |
+|---|---|---|
+| LED Bar clock / data | D9 / D10 | D9 / D10 |
+| Buzzer | D11 | D11 |
+| Switch | D12 | D12 |
+| Red button: LED / button | D5 / D6 | D5 / D6 |
+| Blue button: LED / button | D24 / D25 | **D1 / D0** |
+| SHT41 + ESP32 screen (I2C) | STEMMA QT | SDA / SCL pins |
 
-Every module is powered from **3V** and GND. Never from USB or BAT.
+Grove modules are powered from **3V** and GND, never from USB or BAT.
 
 ## Repo layout
 | Path | What |
 |---|---|
-| `arduino/lora_sensor_node/` | Box firmware (Arduino IDE): sensor readings, multi-hop relay, dedupe, radio TX timeout, watchdog and freeze-location report |
-| `arduino/hw_test/` | Quick test for the LED bar, buzzer and switch on one box |
-| `pi/` | Base-station web app (Python 3 + pyserial): chat, network view, minimap, alerts. Includes `--sim` mode |
-| `PROTOCOL.md` | Over-the-air packet format and the serial protocol between box and Pi |
-| `tests/` | Laptop unit tests for the packet code |
+| `arduino/rtos/rtos_main/` | **The box firmware** (Arduino IDE). FreeRTOS on the RP2040, plain loop on the M0. See `arduino/rtos/README.md` |
+| `arduino/display_esp32/` | Screen + phone Wi-Fi page, for the ESP32-S3 Reverse TFT Feather |
+| `arduino/rtos/rtos_test/` | Small FreeRTOS check on one box (blinking tasks, button → buzzer, LED bar) |
+| `arduino/hw_test/` | Quick test of the LED bar, buzzer, switch and buttons on one box |
+| `arduino/lora_sensor_node_test/` | The first (pre-RTOS) firmware, kept for reference |
+| `pi/` | Base-station web app (Python 3 + pyserial). Has a `--sim` mode |
+| `PROTOCOL.md` | Packet format over the air, and the serial protocol between box and laptop |
+| `tests/` | Laptop tests for the packet format and the key |
 
-## Arduino setup
-1. Add the boards URL `https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json`, then install **Raspberry Pi Pico/RP2040/RP2350** (Earle Philhower).
-2. Select the board **Adafruit Feather RP2040 RFM**.
-3. Install these libraries: **LoRa** (Sandeep Mistry), **Adafruit SHT4x**, **Adafruit NeoPixel**, **Grove LED Bar**.
-4. Set a unique `NODE_ID` in `config.h` for each box, then upload. If the upload hangs, hold BOOT, tap RESET, and upload again.
+## Setup
+**Arduino IDE, radio boards**
+1. Boards Manager URLs (Preferences):
+   - `https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json`
+   - `https://adafruit.github.io/arduino-board-index/package_adafruit_index.json`
+
+   Then install **Raspberry Pi Pico/RP2040/RP2350** (Earle Philhower) and **Adafruit SAMD Boards**.
+2. Libraries: **LoRa** (Sandeep Mistry), **Adafruit SHT4x**. The LED bar driver is built in.
+3. **Team key:** `arduino/rtos/rtos_main/key.h` is secret and not in git. Get it from a teammate, or copy
+   `key.example.h` → `key.h` and put in 16 new random bytes. **Every box needs the same key.**
+4. Open `arduino/rtos/rtos_main/rtos_main.ino` and set `NODE_ID` (different for every box) and `IS_BASE` (1 only on the base box).
+5. Board settings:
+   - **RP2040:** board *Adafruit Feather RP2040 RFM*, **Tools → Operating System → FreeRTOS SMP**.
+   - **M0:** board *Adafruit Feather M0 (SAMD21)*.
+6. Upload. If it can't find the board:
+   - **RP2040:** hold BOOT, tap RESET, upload again.
+   - **M0:** double-tap RESET (a FEATHERBOOT drive appears), then upload.
+
+**Screen board (ESP32-S3)**
+1. Install the **esp32** boards (Espressif) and the **Adafruit ST7735 and ST7789** library.
+2. Board *Adafruit Feather ESP32-S3 Reverse TFT*. Upload `arduino/display_esp32`.
+3. If no port shows up: hold D0, tap RESET, release D0, then upload.
 
 ## Base station
 ```bash
-cd pi && python3 base_station.py --sim   # try without hardware -> http://localhost:8000
+cd pi && python3 base_station.py --sim   # try it without hardware -> http://localhost:8000
 python3 base_station.py                  # with the base box plugged in
 ```
 For the Pi hotspot and auto-start, see `pi/README.md`.
 
+## Phones
+Join the Wi-Fi network **`Team7-<box name>`** (for example `Team7-ALPHA`). The chat page opens by itself, or go to
+**http://192.168.4.1**. On an iPhone, choose "Use Without Internet" if asked.
+
 ## Tests
 ```bash
-g++ -std=c++17 -I arduino/lora_sensor_node tests/test_sensornet.cpp -o t && ./t
+g++ -std=c++17 -Wall -I arduino/rtos/rtos_main tests/test_proto.cpp -o t && ./t   # packet format + key (incl. official SipHash vectors)
+g++ -std=c++17 -Wall -I arduino/lora_sensor_node_test tests/test_sensornet.cpp -o t && ./t   # the old firmware's packet code
 ```
 
 ## Status
-- Working on hardware: two-box link, sensor readings, relay logic, freeze protection.
-- Tested in simulation: 3-box relay chain and the full web app.
-- In progress: CARRY/DEPLOY roles, LED-bar link meter, buzzer warnings, texting and quick messages in the firmware.
+- **Working on hardware:** 4 boxes (3× RP2040, 1× M0) with screens. HELP / OK / texts with confirmations, phone page,
+  base laptop app, CARRY weak-link warning, LED bar signal meter.
+- **Tested in simulation** (the firmware compiled on a laptop with fake radios): relay over 3 hops, catch-up after
+  out-of-range and reboot, packet loss and collisions (✓ rate 4/8 before the confirmation fix → 7–8/8 after),
+  wrong-key and faked packets rejected, watchdog reboot on a frozen part.
+- **Next:** listen-before-talk on the radio, encryption on top of the key, battery level in the ping,
+  short voice notes (Codec2, ~7 packets per 10 s of speech).
+
+Versions are git tags: `v1.0` (first LoRa link + screen), `v1.1` (pings, signal bar, confirmations),
+`v1.2` (relay, sync, M0, phone page, key, watchdog).
 
 ## Hardware lessons
 - Keep metal at least 10 cm from the antennas, and point the antennas straight up.

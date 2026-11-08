@@ -1,4 +1,4 @@
-// lora_sensor_node.ino - Team 7 LoRa sensor network node (Arduino / C++)
+// lora_sensor_node_test.ino - (first firmware, kept for reference) Team 7 LoRa sensor network node (Arduino / C++)
 //
 // Board : Adafruit Feather RP2040 RFM95 (Tools > Board > Raspberry Pi RP2040 Boards
 //         > "Adafruit Feather RP2040 RFM")

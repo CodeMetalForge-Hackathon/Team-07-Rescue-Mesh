@@ -1,5 +1,5 @@
 // Laptop unit tests for sensornet.h:
-//   g++ -std=c++17 -Wall -I arduino/lora_sensor_node tests/test_sensornet.cpp -o t && ./t
+//   g++ -std=c++17 -Wall -I arduino/lora_sensor_node_test tests/test_sensornet.cpp -o t && ./t
 #include <cassert>
 #include <cstdio>
 #include "sensornet.h"
