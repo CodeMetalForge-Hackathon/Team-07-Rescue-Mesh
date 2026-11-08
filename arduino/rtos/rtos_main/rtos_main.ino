@@ -19,8 +19,11 @@
 //   RED button  (button 1, D5/D6)   -> HELP to everyone        (its LED blinks until someone confirms)
 //   BLUE button (button 2, D24/D25) -> OK to everyone          (its LED blinks until someone confirms)
 //   Confirmed -> that LED stays on 3 s + short beep, screen shows who confirmed (tick).
-//   Nobody confirms in 10 s -> that LED blinks fast + two beeps, screen shows "no reply".
-//   Every box confirms (ACKs) every text and quick message it receives, automatically.
+//   No confirmation after 5 s -> the box sends it once more. Still none at 10 s -> LED blinks fast and the
+//   screen shows "no reply" (no beep).
+//   Confirmations: a box confirms each text / quick message it receives, 0.7-1.5 s later (after the relay
+//   copies, so they don't collide). For "everyone" messages only the first box answers - the others hear
+//   that and stay quiet. A message to one box is always confirmed by that box.
 //   Every 30 s each box sends a silent ping (with its role and temperature) - no beep, no message.
 //   LED bar = signal strength of the strongest box heard (10 = strong). Nobody heard -> only the first (red) segment.
 //   CARRY mode: when the link to the deployed boxes / base drops to ~30 % -> rapid beeping and
@@ -69,7 +72,7 @@
 
 // ================================================================== config
 #ifndef NODE_ID
-#define NODE_ID          "ALPHA"   // different on each box, max 8 chars, no commas
+#define NODE_ID          "CHARLIE"   // different on each box, max 8 chars, no commas
 #endif
 #ifndef IS_BASE
 #define IS_BASE          0         // 1 on the box plugged into the Pi
@@ -90,7 +93,7 @@
 #define WEAK_PCT         30        // CARRY alarm starts at or below this signal %
 #define WEAK_CLEAR_PCT   40        // ... and stops at or above this
 #ifndef ACK_WAIT_MS
-#define ACK_WAIT_MS 10000     // how long to wait for a confirmation
+#define ACK_WAIT_MS 10000     // how long to wait for a confirmation (then "no reply")
 #endif
 #define BTN_HELP         1         // red button  = button 1 (D5 LED / D6 button)
 #define BTN_OK           2         // blue button = button 2 (D24 LED / D25 button)
@@ -102,6 +105,11 @@
 #define MAX_HOPS         3         // how many times a packet may be repeated (3 = base + 3 relays + far box)
 #define RELAY_MIN_MS     100       // random wait before repeating (so two relays don't talk at once)
 #define RELAY_MAX_MS     600
+#define ACK_MIN_MS       700       // confirmations wait 0.7-1.5 s: after the relay copies (0.1-0.6 s), so they don't collide
+#define ACK_MAX_MS       1500
+#define RETRY_AFTER_MS   5000      // no confirmation after this -> send our message once more
+#define RETRY_FLAG       8         // added to ttl on a retry, so boxes that already have it confirm again
+#define WAVE_MS          2500      // copies of one transmission arrive within this; later = a new wave
 #define STORE_N          6         // remembered messages for catch-up sync
 #define SEEN_N           24        // remembered (sender, number) pairs to drop duplicates
 #define SYNC_MAX_AGE_MS  600000UL  // only re-send messages younger than 10 minutes
@@ -144,7 +152,7 @@ struct TxPacket { uint8_t len; uint16_t delayMs; uint8_t data[proto::MAX_PKT]; }
 
 // Types used in function arguments must be defined up here: the Arduino IDE puts its automatic
 // function prototypes above the first function, and they need to know these types.
-struct Seen { uint16_t src, seq; };            // (sender, number) of a packet already handled
+struct Seen { uint16_t src, seq; uint32_t at; };   // (sender, number) of a packet already handled, and when
 enum Part : uint8_t { P_IO, P_RADIO, P_I2C, P_APP, P_COUNT };   // parts that check in with the watchdog
 struct Stored {                                 // a message kept for catch-up sync
   bool used; char type[4]; char src[proto::ID_MAX + 1]; uint16_t seq;
@@ -240,6 +248,12 @@ void wdtStart() {
   while (WDT->STATUS.bit.SYNCBUSY) {}
   WDT->CONFIG.reg = WDT_CONFIG_PER_8K;
   WDT->CTRL.reg = WDT_CTRL_ENABLE;
+  while (WDT->STATUS.bit.SYNCBUSY) {}
+#endif
+}
+void wdtStop() {
+#if defined(ARDUINO_ARCH_SAMD)
+  WDT->CTRL.reg = 0;
   while (WDT->STATUS.bit.SYNCBUSY) {}
 #endif
 }
@@ -372,6 +386,12 @@ void ioStep() {
 
 #if !USE_RTOS
 void idleWork() {                                   // M0: keep buttons / buzzer / LEDs alive while waiting
+#if defined(ARDUINO_ARCH_SAMD)
+  // The Arduino IDE starts an upload by opening the port at 1200 baud; the board then resets into its
+  // bootloader 250 ms later. Turn the watchdog off first, so it can't reboot the board in the middle of the upload.
+  static bool uploading = false;
+  if (!uploading && Serial.baud() == 1200) { uploading = true; wdtStop(); }
+#endif
   static uint32_t last = 0;
   if (millis() - last >= 10) { last = millis(); ioStep(); }
 }
@@ -565,7 +585,7 @@ float lastTemp = 0, lastRh = 0; bool lastReal = false; int sensorCount = 0;
 struct Nbr { bool used; char id[9]; char role; float rssi; uint32_t last; };
 Nbr nbrs[8];                                   // boxes heard directly
 
-struct Pend { bool used; uint16_t seq; uint8_t btn; char what[12]; uint32_t sent; uint8_t acks; };
+struct Pend { bool used, retried; uint16_t seq; uint8_t btn; char what[12]; uint32_t sent; uint8_t acks; };
 Pend pend[4];                                  // our messages waiting for confirmation
 
 bool warned = false, everLinked = false;
@@ -585,13 +605,38 @@ uint16_t idHash(const char* s) {               // 16-bit FNV-1a of the box name
   while (*s) { h ^= (uint8_t)*s++; h *= 16777619u; }
   return (uint16_t)(h ^ (h >> 16)) | 1;        // never 0, so 0 = empty slot
 }
+Seen* seenFind(Seen* list, const char* src, unsigned seq) {
+  uint16_t h = idHash(src);
+  for (int i = 0; i < SEEN_N; i++) if (list[i].src == h && list[i].seq == (uint16_t)seq) return &list[i];
+  return nullptr;
+}
 // true if already seen; otherwise remembers it and returns false
 bool seenBefore(Seen* list, uint8_t& pos, const char* src, unsigned seq) {
-  uint16_t h = idHash(src);
-  for (int i = 0; i < SEEN_N; i++) if (list[i].src == h && list[i].seq == (uint16_t)seq) return true;
-  list[pos].src = h; list[pos].seq = (uint16_t)seq;
+  if (seenFind(list, src, seq)) return true;
+  list[pos].src = idHash(src); list[pos].seq = (uint16_t)seq; list[pos].at = millis();
   pos = (pos + 1) % SEEN_N;
   return false;
+}
+
+// ---- confirmations we still have to send. For "everyone" messages only one box needs to answer:
+//      if we hear another box confirm the same message first, we drop ours.
+struct AckJob { bool used, toAll; char src[proto::ID_MAX + 1]; uint16_t seq; uint32_t due; };
+AckJob ackJobs[4];
+void scheduleAck(const char* src, unsigned seq, bool toAll) {
+  AckJob* j = &ackJobs[0];
+  for (auto& a : ackJobs) {
+    if (a.used && a.seq == (uint16_t)seq && !strcmp(a.src, src)) return;   // already planned
+    if (!a.used) { j = &a; break; }
+    if (a.due < j->due) j = &a;
+  }
+  memset(j, 0, sizeof *j);
+  j->used = true; j->toAll = toAll; j->seq = (uint16_t)seq;
+  strncpy(j->src, src, proto::ID_MAX);
+  j->due = millis() + ACK_MIN_MS + rnd() % (ACK_MAX_MS - ACK_MIN_MS);
+}
+void ackHeard(const char* src, unsigned seq) {        // another box confirmed (src, seq)
+  for (auto& a : ackJobs)
+    if (a.used && a.toAll && a.seq == (uint16_t)seq && !strcmp(a.src, src)) a.used = false;
 }
 
 // ---- message store for catch-up sync (oldest is overwritten first)
@@ -711,7 +756,7 @@ unsigned sendTracked(const char* type, const char* dst, const char* body, const 
   storeAdd(type, NODE_ID, seq, rest);                      // so it can be re-sent to boxes that missed it
   int slot = 0;
   for (int i = 0; i < 4; i++) if (!pend[i].used) { slot = i; break; } else if (pend[i].sent < pend[slot].sent) slot = i;
-  pend[slot].used = true; pend[slot].seq = seq; pend[slot].btn = btn; pend[slot].acks = 0;
+  pend[slot].used = true; pend[slot].retried = false; pend[slot].seq = seq; pend[slot].btn = btn; pend[slot].acks = 0;
   strncpy(pend[slot].what, what, 11); pend[slot].what[11] = 0;
   pend[slot].sent = millis();
   show(D_SENT, "YOU", what, 0, seq);
@@ -828,7 +873,9 @@ void handleRadio(const Event& e) {
       if (AUTH_CHECK) return;
     }
   }
-  if (p.ttl > MAX_HOPS) return;                              // nobody of ours sends that
+  bool retry = p.ttl & RETRY_FLAG;                           // the sender's second try (see RETRY_FLAG)
+  unsigned left = p.ttl & (RETRY_FLAG - 1);                  // repeats left
+  if (left > MAX_HOPS || p.ttl > (RETRY_FLAG | MAX_HOPS)) return;   // nobody of ours sends that
   bool ping = !strcmp(p.type, "BC1") || !strcmp(p.type, "SN1");
   bool direct = !strcmp(p.src, p.via);                       // straight from the box that wrote it
   bool mine = !strcmp(p.src, NODE_ID);                       // our own packet, repeated by a neighbour
@@ -850,10 +897,16 @@ void handleRadio(const Event& e) {
   if (ping && direct && f[4][0] == '1') { char why[32]; snprintf(why, sizeof why, "%s just switched on", p.src); askSync(why); }
 
   bool msg = !strcmp(p.type, "MS1") || !strcmp(p.type, "QM1");
-  if (msg ? seenBefore(seenMsg, seenMsgPos, p.src, p.seq) : seenBefore(seenShort, seenShortPos, p.src, p.seq)) {
-    if (msg) { Stored* s = storeFind(p.src, p.seq); if (s) s->overheard = millis(); }
-    return;                                                  // duplicate (another relay's copy)
-  }
+  bool again = false;                                        // a retry of a message we already have
+  if (msg) {
+    Seen* sn = seenFind(seenMsg, p.src, p.seq);
+    if (sn) {
+      Stored* s = storeFind(p.src, p.seq); if (s) s->overheard = millis();
+      if (!retry || millis() - sn->at < WAVE_MS) return;     // duplicate (another relay's copy)
+      sn->at = millis();                                     // first copy of the retry: pass it on + confirm again
+      again = true;
+    } else seenBefore(seenMsg, seenMsgPos, p.src, p.seq);
+  } else if (seenBefore(seenShort, seenShortPos, p.src, p.seq)) return;
   char snr[12]; fmt2(snr, sizeof snr, e.snr);
 
   // ---- repeat it for boxes further away (not if it was meant only for us)
@@ -861,8 +914,8 @@ void handleRadio(const Event& e) {
   const char* rest = p.rest;
   if (!ping && !proto::split1(p.rest, dst, sizeof dst, &rest)) return;
   bool onlyForMe = !strcmp(dst, NODE_ID);
-  if (RELAY && p.ttl > 0 && !onlyForMe)
-    sendRaw(p.type, p.src, p.seq, p.ttl - 1, p.rest, RELAY_MIN_MS + rnd() % (RELAY_MAX_MS - RELAY_MIN_MS));
+  if (RELAY && left > 0 && !onlyForMe)
+    sendRaw(p.type, p.src, p.seq, (p.ttl & RETRY_FLAG) | (left - 1), p.rest, RELAY_MIN_MS + rnd() % (RELAY_MAX_MS - RELAY_MIN_MS));
 
   if (ping) {                                                // silent ping / sensor broadcast
     const char *t = f[1], *h = f[2], *fl = f[3];
@@ -875,7 +928,10 @@ void handleRadio(const Event& e) {
   }
 
   bool forMe = !strcmp(dst, "*") || onlyForMe;
-  char ack[32]; snprintf(ack, sizeof ack, "%s,%u,R", p.src, p.seq);
+  if (again) {                                               // already shown: only confirm again
+    if (forMe) { scheduleAck(p.src, p.seq, !onlyForMe); logf("%s #%u from %s again (retry) - confirming again", p.type, p.seq, p.src); }
+    return;
+  }
   char hops[16] = "";
   if (!direct) snprintf(hops, sizeof hops, " (via %s)", p.via);
 
@@ -886,7 +942,7 @@ void handleRadio(const Event& e) {
     logf("RX text from %s%s: %s", p.src, hops, rest);
     show(D_MSG, p.src, rest, e.rssi);
     ui(UI_BEEP, 2, 0, 60);
-    sendPkt("AK1", ack, 100 + (uint16_t)(rnd() % 500));   // random wait: many boxes may answer
+    scheduleAck(p.src, p.seq, !onlyForMe);
   } else if (!strcmp(p.type, "QM1")) {
     storeAdd(p.type, p.src, p.seq, p.rest);
     if (IS_BASE) protoLine("QM,%s,%u,%s,%s,%d,%s,%s", p.src, p.seq, dst, rest, e.rssi, snr, p.via);
@@ -897,11 +953,12 @@ void handleRadio(const Event& e) {
     if (!strcmp(rest, "HELP")) { ui(UI_BEEP, 3, 0, 120); ui(UI_LED, BTN_HELP, LED_FAST, 5000); }
     else if (!strcmp(rest, "RETURN")) ui(UI_BEEP, 5, 0, 200);
     else ui(UI_BEEP, 1, 0, 60);
-    sendPkt("AK1", ack, 100 + (uint16_t)(rnd() % 500));   // random wait: many boxes may answer
+    scheduleAck(p.src, p.seq, !onlyForMe);
   } else if (!strcmp(p.type, "AK1")) {
-    if (!onlyForMe) return;                                    // confirmation for someone else
     unsigned seq = 0; char flag = 'R';
     sscanf(rest, "%u,%c", &seq, &flag);
+    if (flag == 'R') ackHeard(dst, seq);                       // someone already confirmed it: we needn't
+    if (!onlyForMe) return;                                    // confirmation for someone else
     if (IS_BASE) protoLine("ACK,%s,%u", p.src, seq);
     gotAck(p.src, seq, flag == 'O', e.rssi);
   }
@@ -963,12 +1020,24 @@ void housekeeping() {
     warned = false; ui(UI_ALARM, 0); show(D_WARN, "", "");
   }
 
+  for (auto& a : ackJobs) {                                  // confirmations that are due
+    if (!a.used || (int32_t)(now - a.due) < 0) continue;
+    char ack[32]; snprintf(ack, sizeof ack, "%s,%u,R", a.src, a.seq);
+    sendPkt("AK1", ack);
+    a.used = false;
+  }
+
   for (auto& p : pend) {
-    if (p.used && now - p.sent > ACK_WAIT_MS) {
-      if (!p.acks) {
+    if (!p.used) continue;
+    if (!p.acks && !p.retried && now - p.sent > RETRY_AFTER_MS) {     // no confirmation yet: try once more
+      p.retried = true;
+      Stored* s = storeFind(NODE_ID, p.seq);
+      if (s) { sendRaw(s->type, NODE_ID, s->seq, RETRY_FLAG | MAX_HOPS, s->rest, 0); logf("#%u: no confirmation yet - sending it once more", p.seq); }
+    }
+    if (now - p.sent > ACK_WAIT_MS) {
+      if (!p.acks) {                                           // quiet: screen + fast LED only, no beep
         show(D_ACK, "-", "", 0, p.seq);
         if (p.btn) ui(UI_LED, p.btn, LED_FAST, 3000);
-        ui(UI_BEEP, 2, 0, 150);
         logf("#%u: nobody confirmed yet (will retry when a box comes in range)", p.seq);
       }
       p.used = false;

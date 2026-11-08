@@ -103,11 +103,15 @@ Each box's ESP32 screen board makes an **open Wi-Fi network called `Team7-<box n
 | **Blue** button (button 2, D24/D25) | **OK** to everyone, with the same confirmation feedback |
 | Switch | CARRY / DEPLOY (flip `DEPLOY_LEVEL` if it's backwards) |
 | LED bar | **Signal strength** of the strongest box heard (10 = strong). Nobody heard = only the first (red) segment. Set `BAR_RED_FIRST 0` if your bar is mounted the other way round. |
-| Buzzer | 1 beep sent / confirmed · 2 beeps text received, or no reply · 3 beeps HELP received · **rapid bursts = CARRY mode with a weak link: deploy a relay** |
+| Buzzer | 1 beep sent / confirmed · 2 beeps text received · 3 beeps HELP received · no reply = no beep (screen + fast LED only) · **rapid bursts = CARRY mode with a weak link: deploy a relay** |
 
 - **Silent ping:** every 30 s each box sends a short ping with its role and temperature. There's no beep or
   message. It keeps the LED bar, the screen's box list and the base app's network view up to date.
-- **Confirmations:** every box automatically confirms each text and quick message it receives.
+- **Confirmations:** a box confirms each text and quick message it receives, 0.7–1.5 s later, after the relay copies,
+  so they don't collide. For "everyone" messages (HELP, OK, texts to Everyone) only the **first** box answers; the others hear it
+  and stay quiet, so the ✓ usually shows one name. A text to one box is always confirmed by that box.
+  No ✓ after 5 s → the box sends the message **once more**. Boxes that already have it don't show it again, they just confirm.
+  Still nothing at 10 s → "no reply" (screen + fast LED, no beep).
   When the base operator presses *Acknowledge* in the app, the box shows "HELP acknowledged - help is coming".
 - **CARRY alarm:** when the link to the deployed boxes or base falls to 30 % or below, the box beeps rapidly and shows DEPLOY A RELAY.
   It stops at 40 %, or when you switch to DEPLOY. Signal readings are averaged, and with 30 s pings
