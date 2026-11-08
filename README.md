@@ -2,8 +2,7 @@
 
 A GPS-free, cell-free communication network for search and rescue. Responders carry LoRa **nodes**
 and drop them as relays as they move into a forest, desert, mountain, building, or rubble. 
-The nodes pass texts, OK / HELP alerts and sensor readings along the chain, back to a **base station** 
-laptop that shows chat, alerts, the network and a rough map, all worked out from the radio links themselves. 
+The nodes pass texts, OK / HELP alerts and sensor readings along the chain, through a network that shows chat, alerts, the network and a rough map, all worked out from the radio links themselves. 
 Any phone can join a nodes's own Wi-Fi to read and send messages, with no app and no internet.
 
 ```
