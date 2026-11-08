@@ -5,8 +5,23 @@ this board. You don't need to download FreeRTOS, and the separate FreeRTOS-LTS d
 **not** be added to this repo: it targets the Pico SDK/CMake toolchain and is 115 MB.
 
 ## Arduino IDE settings
+**RP2040 boxes (ALPHA, BRAVO, BASE)**
 - **Tools → Board →** Adafruit Feather RP2040 RFM
-- **Tools → Operating System → FreeRTOS SMP** ← required, or it won't compile or run
+- **Tools → Operating System → FreeRTOS SMP** ← required, otherwise you get `FreeRTOS.h: No such file`
+
+**M0 box (CHARLIE: Feather M0 RFM95, #3178)**
+- Install **Adafruit SAMD Boards** in the Boards Manager (needs the Adafruit board URL in Preferences).
+- **Tools → Board → Adafruit SAMD → Adafruit Feather M0 (SAMD21)**
+- The same `rtos_main` sketch runs here **without FreeRTOS**: the tasks run one after another in `loop()`,
+  and `minirtos.h` provides the few FreeRTOS calls. The features are the same: buttons, switch, LED bar, buzzer, screen, sensor, relay and sync.
+  It uses ~11 KB of the M0's 32 KB RAM.
+- Wiring differences (handled in `pins.h`):
+  - Blue button: LED on **D1**, button on **D0** (D24 is the radio's SPI clock on the M0).
+  - No STEMMA QT plug: the SHT41 and the ESP32 screen go on the **SDA / SCL** pins (plus 3V / GND).
+  - Radio pins are CS 8, RST 4, IRQ 3. They're on the board already, nothing to wire.
+- Typing `STACKS` prints the free RAM.
+
+**All boxes**
 - Libraries: **LoRa** (Sandeep Mistry), **Adafruit SHT4x**. The LED bar driver is built in (`ledbar.h`).
 - Screen: a separate **ESP32-S3 Reverse TFT Feather** running `../display_esp32` (see below).
 
@@ -17,7 +32,7 @@ this board. You don't need to download FreeRTOS, and the separate FreeRTOS-LTS d
 | `rtos_main/` | The real firmware, being built up step by step. One task per piece of hardware, joined by queues. It already does OK/HELP quick messages, texts from the base shown on the screen (confirmed back automatically), screen pages, CARRY/DEPLOY, sensor broadcasts, and the base-station serial protocol. Set `NODE_ID` (and `IS_BASE` on the Pi's box) for each box. |
 
 `pins.h` and `ledbar.h` are copied into each sketch folder, because Arduino sketches can't
-share files across folders. **When you change them, change both copies.**
+share files across folders. **When you change them, change both copies.** (`rtos_test` is RP2040-only.)
 
 ## Screen (ESP32-S3 Reverse TFT Feather)
 The TFT on that board is wired inside the board to its own ESP32-S3, so the RP2040 can't drive it.
@@ -47,6 +62,40 @@ power: RP2040 USB pin -- ESP32 USB pin  (one USB cable for both; NOT 3V to 3V)
 - A red **"WAITING FOR BOX" / "NO LINK TO BOX"** bar means nothing has arrived from the RP2040 for 15 s. Check the SDA/SCL/GND wires and that the RP2040 is running `rtos_main`.
 - Text uses size 2 (about 1.6 mm tall). That's the smallest that's readable on a 1.14" screen.
 
+## Safety: packet key + watchdog (v1.2)
+**Key (authentication).** Every packet carries a 16-hex-digit tag made with the team key (SipHash-2-4, a standard
+algorithm for authenticating short messages; checked against its official test vectors). Packets with a wrong tag are
+ignored, and the Serial Monitor says `!! ... failed the key check`. This stops a fake HELP or a fake
+"all clear" from someone else's radio. The text itself is **not** hidden: it's authenticated, not encrypted.
+- The key lives in `rtos_main/key.h`. **It is secret and is NOT in git** (`.gitignore`).
+  - Your laptop already has one. Every box flashed from this folder gets the same key automatically.
+  - A teammate cloning the repo: ask for `key.h`, or copy `key.example.h` → `key.h`, put in new random bytes, and re-flash **every** box.
+- A box with a different key (or old firmware) is cut off, and its neighbours log it every 10 s. `AUTH_CHECK 0` logs bad tags but accepts them (debugging only).
+- Relays may change `ttl` and `via`, so those two fields aren't covered by the tag. Duplicates are still dropped, so an
+  immediate replay of a recorded packet does nothing.
+
+**Watchdog.** The radio, io (buttons/LEDs), i2c (sensor/screen) and app parts each check in every time they run.
+The watchdog is only fed while **all** of them are alive. If one is stuck for 4 s, the log names it (`!! radio part stuck...`),
+and the box reboots at 8 s. After the reboot it says `this start was a WATCHDOG REBOOT`, and the catch-up sync restores
+messages it missed. RP2040: built-in watchdog. M0: the SAMD21 watchdog, set up directly (no library).
+
+## Phone page (v1.2)
+Each box's ESP32 screen board makes an **open Wi-Fi network called `Team7-<box name>`** (e.g. `Team7-ALPHA`).
+1. On the phone: Settings → Wi-Fi → join `Team7-ALPHA`. The chat page opens by itself.
+   If it doesn't, open the browser and go to **http://192.168.4.1** (any `http://` address works too).
+   - **iPhone:** if a sheet pops up, use it, or tap *Cancel → Use Other Network / Use Without Internet* to stay connected and use Safari.
+   - **Android:** tap *Sign in to network*. If it asks, choose *Stay connected / Use this network as is*.
+2. The page shows the box's messages (with ✓ confirmations), the boxes it hears, temperature, and the DEPLOY A RELAY warning.
+   You can send a text (to everyone or one box, 60 characters max) and press **OK** or **HELP**. HELP needs two taps so it can't go by accident.
+   **HELP / OK from the phone are exactly the box's red / blue buttons**: same LED, beep and confirmations.
+- How it works: the main board asks the screen board every 0.25 s "did the phone send something?" over the I2C wires
+  that already connect them, so there's no new wiring. Each line has a number and is confirmed, so it is never lost or sent twice.
+- Range: about 10–20 m. Wi-Fi power is set low (`WIFI_POWER` in `display_esp32.ino`) because the screen board runs off the box's 3.3 V.
+  If the screen board keeps restarting while the phone is connected, that 3.3 V supply is too weak: power the ESP32 from USB instead.
+- `PHONE_WIFI 0` in `display_esp32.ino` turns the Wi-Fi off. `WIFI_PASS` (8+ characters) adds a password.
+- Upload **both** the new `display_esp32` (ESP32 board) and the new `rtos_main` (main board). An old main board never collects the phone's messages,
+  and the page will say "Waiting for the box to take N message(s)".
+
 ## Buttons, switch, LED bar, buzzer
 | Input / output | Does |
 |---|---|
@@ -64,10 +113,26 @@ power: RP2040 USB pin -- ESP32 USB pin  (one USB cable for both; NOT 3V to 3V)
   It stops at 40 %, or when you switch to DEPLOY. Signal readings are averaged, and with 30 s pings
   the alarm can lag up to about a minute behind someone walking. `PING_EVERY_MS` is the setting that controls this.
 
+## Relay and catch-up sync (v1.2)
+- **Relay:** every box repeats each packet the first time it hears it, after a random 0.1–0.6 s wait.
+  A packet can be repeated up to `MAX_HOPS` (3) times, so BASE – relay – relay – relay – far box works.
+  Confirmations come back the same way. Duplicates are dropped by (sender, number).
+  Set `RELAY 0` on a box that should never repeat.
+- **Catch-up sync:** every box remembers the last `STORE_N` (6) texts and quick messages.
+  When a box comes into range, is switched on, or reboots, its neighbours re-send anything younger than 10 minutes.
+  - A HELP pressed out of range shows "no reply" after 10 s. It is delivered automatically once the carrier
+    walks back into range, and the confirmation still turns up on the screen.
+  - A text the base sent while a box was away reaches that box when it returns.
+- **Map data:** each ping lists up to 4 boxes it hears and how strongly. The base box turns these into
+  `NBR` lines, so the app can draw the whole chain, including boxes the base can't hear.
+- RAM: the relay and sync add about 0.9 KB, all fixed-size (no `malloc`). On the M0, lower `STORE_N` first if it's tight.
+- Limits: there's no listen-before-talk, so two boxes sending at the exact same moment can still collide.
+  The random waits make this rare, but a collided HELP is only re-sent on the next sync.
+
 ## Base box
 Set `IS_BASE 1` and plug the box into the Pi or a laptop running `pi/base_station.py`.
 - The box accepts `TX,<dst>,<text>`, `QM,<dst>,<code>` and `AK,<dst>,<seq>` from the app.
-- It prints `ME`, `DATA`, `MSG`, `QM`, `ACK` and `SENT` lines (see `PROTOCOL.md`).
+- It prints `ME`, `DATA`, `BCN`, `NBR`, `MSG`, `QM`, `ACK` and `SENT` lines (see `PROTOCOL.md`). Messages that came through a relay show the relay in the `via` field.
 - Texts to `*` go to everyone; texts to a box ID go to that box only.
 - A field box confirms every text it receives, so the app shows ✓✓ delivered.
 - When the base operator acknowledges a HELP, that box shows "HELP acknowledged - help is coming".
@@ -100,10 +165,10 @@ sensor  task (prio 1) --events-->      |        --packets-----> radio task (prio
 - [x] base-station serial protocol: `ME`, `DATA`, `MSG`, `QM`, `ACK`, `SENT`, and the `TX`/`QM`/`AK` commands
 - [x] screen on the ESP32-S3 TFT: messaging screen, confirmation status, full-screen long messages, HELP alert, warning banner
 - [x] v1.1: silent ping (30 s), LED bar = signal strength, confirmations for every message, red = HELP / blue = OK, CARRY weak-link alarm, fewer tasks and smaller memory use
-- [ ] relay through other boxes + dedupe (for chains longer than one hop)
+- [x] v1.2: relay through other boxes + dedupe, confirmations over several hops, catch-up sync after out-of-range / reboot
 - [x] each box's role is sent in its ping (the app shows C / D / B)
-- [ ] `NBR` neighbour reports for the map
-- [ ] M0 (SAMD21) port
+- [x] `NBR` neighbour reports for the map (sent inside the ping)
+- [x] M0 (SAMD21) port: same sketch, plain loop instead of FreeRTOS (`minirtos.h`)
 - [ ] CARRY/DEPLOY roles, chain numbering, beacons
 - [ ] LED bar link meter and buzzer range warning
 - [ ] quick messages with acknowledgement, and the base → box message panel

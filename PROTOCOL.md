@@ -6,22 +6,26 @@ Pi/laptop say to each other **over USB serial** (115200 baud, one line per messa
 ## 1. Over the air (LoRa, between boxes)
 
 Every packet = 4-byte RadioHead header `FF FF 00 00` + ASCII, comma-separated.
-Fields 1–4 are the same for every type so relaying/dedupe works the same way:
+Fields 1–6 are the same for every type so relaying/dedupe works the same way.
+`tag` = 16 hex digits, SipHash-2-4 with the team key (`key.h`) over `<TYPE>,<src>,<seq>,<rest>`.
+Packets with a wrong tag are ignored. `ttl`/`via` are not covered, because relays change them:
 
 ```
-<TYPE>,<src>,<seq>,<ttl>,<via>,...type-specific fields...
+<TYPE>,<src>,<seq>,<ttl>,<via>,<tag>,...type-specific fields...
 ```
 | Type | Rest of fields | Purpose |
 |---|---|---|
 | `SN1` | `temp_c,rh,flag` | sensor reading (flag R=real, S=simulated) |
-| `BC1` | `role,chain` | beacon every ~2 s from deployed/base boxes (ttl=0, never relayed) — used for the link meter |
+| `BC1` | `role,temp,rh,flag,boot,nbrs` | silent ping every ~30 s from every box. `boot` = 1 for the first 3 pings after power-on (asks neighbours to re-sync). `nbrs` = `id:rssi;id:rssi` of up to 4 boxes heard directly (feeds the map). Relayed like everything else. |
 | `MS1` | `dst,text` | text message; `dst` = node id or `*` for everyone; text is last so it may contain commas |
 | `QM1` | `dst,code` | quick message: `OK`, `HELP`, `FOUND`, `RETURN` |
-| `AK1` | `dst,acked_seq` | "message received" confirmation sent back to `dst` |
-| `NB1` | `role,chain,id:rssi;id:rssi;...` | neighbour report every ~10 s: who this box hears directly and how strongly (relayed to base, feeds the minimap) |
+| `AK1` | `dst,acked_seq,R\|O` | confirmation sent back to `dst`: `R` = received by a box, `O` = acknowledged by the base operator |
 
 `role`: `B` base, `D` deployed relay, `C` carried. `chain`: base = 0, each drop = previous + 1, carried = -1.
-`(src, seq)` identifies a message; duplicates are dropped; relays decrement `ttl`.
+`(src, seq)` identifies a packet; duplicates are dropped.
+`ttl` = how many more times it may be repeated (starts at 3). A box repeating it sets `via` to itself and `ttl - 1`.
+`via == src` means the packet came straight from the box that wrote it.
+Boxes keep the last 6 `MS1`/`QM1` and re-send them (same `src`, `seq`) when a neighbour returns or reboots.
 
 ## 2. Box → Pi/laptop (serial lines the box prints)
 
@@ -31,7 +35,7 @@ Lines that start with one of these tags are machine-readable; anything else is a
 |---|---|
 | `ME,<id>,<role>,<chain>,<temp>,<rh>,<flag>` | who the attached box is + its own reading (boot and every ~5 s) |
 | `DATA,<src>,<seq>,<temp>,<rh>,<flag>,<rssi>,<snr>,<via>,<heard_by>` | sensor reading received |
-| `BCN,<src>,<role>,<chain>,<rssi>,<snr>` | beacon heard |
+| `BCN,<src>,<role>,<chain>,<rssi>,<snr>` | ping heard **directly** from `src` |
 | `LINK,<tail_id>,<margin_db>,<state>` | carried box's link meter: state `OK` / `WARN` / `LOST` |
 | `MSG,<src>,<seq>,<dst>,<rssi>,<snr>,<via>,<text>` | text received (text may contain commas) |
 | `QM,<src>,<seq>,<dst>,<code>,<rssi>,<snr>,<via>` | quick message received |

@@ -1,9 +1,15 @@
-// display_esp32.ino - messaging screen for a Team 7 box, on the Adafruit ESP32-S3 Reverse TFT Feather (v1.1).
-// It draws what the box's Feather RP2040 sends over I2C (see rtos_main/displink.h).
-// The ESP32 is an I2C *device* at address 0x42; the RP2040 is the controller.
+// display_esp32.ino - messaging screen + phone page for a Team 7 box, on the Adafruit ESP32-S3
+// Reverse TFT Feather (v1.2). It draws what the box's main board sends over I2C (see rtos_main/displink.h).
+// The ESP32 is an I2C *device* at address 0x42; the main board (RP2040 / M0) is the controller.
+//
+// PHONE: the ESP32 also makes a Wi-Fi network "Team7-<box name>" (open, no password). Join it with a
+// phone and the chat page opens by itself (or browse to http://192.168.4.1). From the phone you can
+// read the box's messages, send texts and press HELP / OK - exactly like the box's own buttons.
+// The main board fetches what the phone sent by polling this board over I2C (see "phone outbox" below).
 //
 // Arduino IDE: Boards Manager "esp32" by Espressif -> board "Adafruit Feather ESP32-S3 Reverse TFT"
 // Library:     "Adafruit ST7735 and ST7789 Library" (click Install all -> also installs Adafruit GFX)
+//              WiFi / WebServer / DNSServer come with the esp32 board package - nothing to install.
 // Wiring:      RP2040 SDA -- ESP32 SDA (GPIO 3), RP2040 SCL -- ESP32 SCL (GPIO 4), GND -- GND
 //              (STEMMA QT to STEMMA QT works). Power: USB pin <-> USB pin, NOT 3V <-> 3V.
 // Debug:       open this board's Serial Monitor (115200) - every received line is printed there.
@@ -19,8 +25,15 @@
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
 
 #define I2C_ADDR 0x42                    // must match DISPLAY_I2C_ADDR in rtos_main/displink.h
+#define PHONE_WIFI   1                   // 0 = no Wi-Fi / phone page
+#define WIFI_PASS    ""                  // "" = open network; or 8+ characters for a password
+#define WIFI_POWER   WIFI_POWER_8_5dBm   // low power: ~10-20 m range, and less current from the box's 3.3 V
+#define PHONE_READ   80                  // bytes per poll - must match PHONE_READ in rtos_main.ino
 
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 GFXcanvas16 canvas(240, 135);            // draw here, then copy in one go: no flicker
@@ -47,6 +60,12 @@ Msg msgs[4];             // newest first
 
 struct Node { bool used; char id[9]; int rssi; uint32_t t; };
 Node nodes[8];
+
+// Longer history for the phone page (the screen only needs the newest few)
+struct PMsg { uint32_t id, t; bool mine; char from[9]; char text[64]; uint16_t seq; int8_t ack; char by[9]; uint8_t nack; };
+PMsg plog[24];
+uint32_t plogNext = 1;
+char rh[8] = "--";
 
 uint32_t fullMsgUntil = 0, alertUntil = 0, lastLineAt = 0;
 char alertFrom[9] = "", warnText[40] = "";
@@ -213,6 +232,14 @@ int fields(char* s, char** f, int n) {      // split at the first n commas; the 
   return k;
 }
 
+PMsg& newPMsg() {                          // overwrite the oldest
+  PMsg* o = &plog[0];
+  for (auto& p : plog) if (p.id < o->id) o = &p;
+  memset(o, 0, sizeof *o);
+  o->id = plogNext++; o->t = millis();
+  return *o;
+}
+
 Msg& newMsg() {
   for (int i = 3; i > 0; i--) msgs[i] = msgs[i - 1];
   memset(&msgs[0], 0, sizeof msgs[0]);
@@ -230,20 +257,29 @@ void handleLine(char* line) {
     if (fields(body, f, 5) < 6) return;                         // STATUS,id,mode,temp,rh,flag
     strncpy(myId, f[1], 8); strncpy(mode, f[2], 7);
     if (strcmp(f[3], "-")) strncpy(temp, f[3], 7);
+    if (strcmp(f[4], "-")) strncpy(rh, f[4], 7);
   } else if (!strncmp(body, "MSG,", 4)) {
     if (fields(body, f, 3) < 4) return;                         // MSG,from,rssi,text
     Msg& m = newMsg();
     strncpy(m.from, f[1], 8); m.rssi = atoi(f[2]); strncpy(m.text, f[3], sizeof m.text - 1);
+    PMsg& p = newPMsg(); strcpy(p.from, m.from); strcpy(p.text, m.text);
     if (!strcmp(m.text, "[HELP]")) { strncpy(alertFrom, m.from, 8); alertUntil = millis() + 20000; }
     else { alertUntil = 0; fullMsgUntil = wrappedLines(m.text) > 3 ? millis() + 20000 : 0; }
   } else if (!strncmp(body, "SENT,", 5)) {
     if (fields(body, f, 2) < 3) return;                         // SENT,seq,text
     Msg& m = newMsg();
     m.mine = true; strcpy(m.from, "YOU"); m.seq = atoi(f[1]); strncpy(m.text, f[2], sizeof m.text - 1);
+    PMsg& p = newPMsg(); p.mine = true; strcpy(p.from, "YOU"); p.seq = m.seq; strcpy(p.text, m.text);
     fullMsgUntil = alertUntil = 0;
   } else if (!strncmp(body, "ACK,", 4)) {
     if (fields(body, f, 2) < 3) return;                         // ACK,seq,by
     uint16_t seq = atoi(f[1]);
+    for (auto& p : plog) {                                       // phone history
+      if (!p.id || !p.mine || p.seq != seq) continue;
+      if (!strcmp(f[2], "-")) { if (p.ack == 0) p.ack = -1; }
+      else { if (p.ack <= 0) { p.ack = 1; p.nack = 0; strncpy(p.by, f[2], 8); p.by[8] = 0; } p.nack++; }
+      break;
+    }
     for (auto& m : msgs) {
       if (!m.used || !m.mine || m.seq != seq) continue;
       if (!strcmp(f[2], "-")) { if (m.ack == 0) m.ack = -1; }
@@ -278,9 +314,40 @@ void handleLine(char* line) {
 struct Line { char s[128]; };
 QueueHandle_t lineQueue;
 
+// ---- phone outbox: lines for the main board ("TX,<dst>,<text>" or "QM,<dst>,<code>").
+// Each poll (main board reads PHONE_READ bytes) returns [id][len][text][zero padding]; id 0 = nothing.
+// The main board then writes 0x06,<id> ("got it") and only then do we move to the next line. So a line is
+// never lost, and the main board ignores an id it has already handled - it can't be sent twice either.
+struct Out { uint8_t id; char s[PHONE_READ - 2]; };
+QueueHandle_t outQueue;
+Out outCur = {0, ""};                      // only touched in the I2C callbacks (same driver task)
+uint8_t outNextId = 1;
+volatile int outWaiting = 0;               // lines not yet taken by the main board (for the phone page)
+
+void onI2CRequest() {
+  if (!outCur.id) {
+    Out o;
+    if (xQueueReceive(outQueue, &o, 0) == pdTRUE) outCur = o;
+  }
+  uint8_t b[PHONE_READ];
+  memset(b, 0, sizeof b);
+  if (outCur.id) {
+    size_t n = strlen(outCur.s);
+    if (n > PHONE_READ - 2) n = PHONE_READ - 2;
+    b[0] = outCur.id; b[1] = (uint8_t)n; memcpy(b + 2, outCur.s, n);
+  }
+  Wire.write(b, sizeof b);                 // always exactly PHONE_READ bytes
+}
+
 void onI2CReceive(int len) {
   static char buf[128];
   static int n = 0;
+  if (Wire.peek() == 0x06 && len == 2) {                        // main board: "got line <id>"
+    Wire.read();
+    int id = Wire.read();
+    if (outCur.id && id == outCur.id) { outCur.id = 0; if (outWaiting > 0) outWaiting--; }
+    return;
+  }
   while (Wire.available()) {
     int c = Wire.read();
     if (c == 0x02) { n = 0; continue; }                         // start of a new line
@@ -290,6 +357,111 @@ void onI2CReceive(int len) {
     } else if (n < (int)sizeof buf - 1) buf[n++] = (char)c;
   }
 }
+
+// ---------------------------------------------------------------- phone: Wi-Fi + web page
+#if PHONE_WIFI
+#include "phone_page.h"                   // the HTML page (PHONE_PAGE)
+WebServer web(80);
+DNSServer dns;
+bool wifiOn = false;
+
+bool phoneQueue(const char* line) {
+  Out o; memset(&o, 0, sizeof o);
+  o.id = outNextId; outNextId = outNextId >= 254 ? 1 : outNextId + 1;   // 1..254
+  strncpy(o.s, line, sizeof o.s - 1);
+  if (xQueueSend(outQueue, &o, 0) != pdTRUE) return false;
+  outWaiting++;
+  Serial.printf("phone: %s\n", line);
+  return true;
+}
+
+void jsonStr(String& j, const char* s) {     // add "s" with quotes escaped
+  j += '"';
+  for (; *s; s++) { if (*s == '"' || *s == '\\') j += '\\'; j += *s; }
+  j += '"';
+}
+
+void webState() {
+  String j; j.reserve(3500);
+  j += "{\"id\":"; jsonStr(j, myId);
+  j += ",\"mode\":"; jsonStr(j, mode);
+  j += ",\"temp\":"; jsonStr(j, temp);
+  j += ",\"rh\":"; jsonStr(j, rh);
+  j += ",\"warn\":"; jsonStr(j, warnText);
+  j += ",\"link\":"; j += (lastLineAt && millis() - lastLineAt < 15000) ? "true" : "false";
+  j += ",\"waiting\":"; j += (int)outWaiting;
+  j += ",\"boxes\":[";
+  bool first = true;
+  for (auto& n : nodes) {
+    if (!n.used) continue;
+    if (!first) j += ','; first = false;
+    j += "{\"id\":"; jsonStr(j, n.id);
+    j += ",\"rssi\":"; j += n.rssi;
+    j += ",\"age\":"; j += (millis() - n.t) / 1000; j += '}';
+  }
+  j += "],\"msgs\":[";
+  first = true;
+  for (uint32_t id = plogNext > 24 ? plogNext - 24 : 1; id < plogNext; id++) {     // oldest first
+    for (auto& p : plog) {
+      if (p.id != id) continue;
+      if (!first) j += ','; first = false;
+      j += "{\"mine\":"; j += p.mine ? "true" : "false";
+      j += ",\"from\":"; jsonStr(j, p.from);
+      j += ",\"text\":"; jsonStr(j, p.text);
+      j += ",\"age\":"; j += (millis() - p.t) / 1000;
+      j += ",\"ack\":"; j += (int)p.ack;
+      j += ",\"by\":"; jsonStr(j, p.by);
+      j += ",\"n\":"; j += (int)p.nack; j += '}';
+    }
+  }
+  j += "]}";
+  web.sendHeader("Cache-Control", "no-store");
+  web.send(200, "application/json", j);
+}
+
+void webSend() {                               // POST to=<id or *>&text=<text>
+  String to = web.arg("to"), t = web.arg("text");
+  char clean[61]; int n = 0;
+  size_t i = 0;
+  while (i < t.length() && t[i] == ' ') i++;                    // trim leading spaces
+  for (; i < t.length() && n < 60; i++) { char c = t[i]; if (c >= 32 && c <= 126) clean[n++] = c; }
+  while (n && clean[n - 1] == ' ') n--;
+  clean[n] = 0;
+  if (!n) { web.send(400, "text/plain", "empty"); return; }
+  if (to.length() == 0 || to.length() > 8 || to.indexOf(',') >= 0) to = "*";
+  char line[PHONE_READ];
+  snprintf(line, sizeof line, "TX,%s,%s", to.c_str(), clean);
+  web.send(phoneQueue(line) ? 200 : 503, "text/plain", "ok");
+}
+
+void webQuick() {                              // POST code=HELP|OK
+  String c = web.arg("code");
+  if (c != "HELP" && c != "OK") { web.send(400, "text/plain", "bad code"); return; }
+  char line[16]; snprintf(line, sizeof line, "QM,*,%s", c.c_str());
+  web.send(phoneQueue(line) ? 200 : 503, "text/plain", "ok");
+}
+
+void webRedirect() {                           // any other address -> our page (makes the phone open it)
+  web.sendHeader("Location", "http://192.168.4.1/", true);
+  web.send(302, "text/plain", "");
+}
+
+void wifiStart() {
+  char ssid[24]; snprintf(ssid, sizeof ssid, "Team7-%s", myId);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid, strlen(WIFI_PASS) >= 8 ? WIFI_PASS : nullptr);
+  WiFi.setTxPower(WIFI_POWER);
+  dns.start(53, "*", WiFi.softAPIP());         // every name -> us (captive portal)
+  web.on("/", HTTP_GET, [] { web.sendHeader("Cache-Control", "no-store"); web.send(200, "text/html", PHONE_PAGE); });
+  web.on("/api/state", HTTP_GET, webState);
+  web.on("/api/send", HTTP_POST, webSend);
+  web.on("/api/quick", HTTP_POST, webQuick);
+  web.onNotFound(webRedirect);
+  web.begin();
+  wifiOn = true;
+  Serial.printf("Wi-Fi \"%s\" up - phone page at http://%s\n", ssid, WiFi.softAPIP().toString().c_str());
+}
+#endif
 
 // ---------------------------------------------------------------- setup / loop
 void setup() {
@@ -303,9 +475,12 @@ void setup() {
   canvas.cp437(true);                                            // so \xFB draws the check mark
   draw();
   lineQueue = xQueueCreate(8, sizeof(Line));
+  outQueue = xQueueCreate(4, sizeof(Out));
+  outNextId = 1 + esp_random() % 254;                            // random start: never repeats an id after a restart
   Wire.onReceive(onI2CReceive);
+  Wire.onRequest(onI2CRequest);
   Wire.begin((uint8_t)I2C_ADDR);                                 // I2C device on SDA 3 / SCL 4
-  Serial.printf("Team 7 display v1.1 ready - I2C device at 0x%02X\n", I2C_ADDR);
+  Serial.printf("Team 7 display v1.2 ready - I2C device at 0x%02X\n", I2C_ADDR);
 }
 
 void loop() {
@@ -314,8 +489,12 @@ void loop() {
     Serial.printf("rx: %s\n", l.s);                              // debug: everything that arrives
     handleLine(l.s);
   }
+#if PHONE_WIFI
+  if (!wifiOn && strcmp(myId, "?")) wifiStart();               // start once we know the box's name
+  if (wifiOn) { dns.processNextRequest(); web.handleClient(); }
+#endif
   static uint32_t lastDraw = 0;
   bool animating = (alertUntil && millis() < alertUntil) || warnText[0];   // blinking screens
   if (dirty || millis() - lastDraw > (animating ? 250u : 1000u)) { draw(); lastDraw = millis(); }
-  delay(10);
+  delay(2);
 }
