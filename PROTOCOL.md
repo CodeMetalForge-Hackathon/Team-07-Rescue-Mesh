@@ -43,6 +43,6 @@ Lines that start with one of these tags are machine-readable; anything else is a
 
 | Command | Effect |
 |---|---|
-| `TX,<dst>,<text>` | send a text (`dst` = id or `*`); max 140 printable ASCII chars |
+| `TX,<dst>,<text>` | send a text (`dst` = id or `*`); max 60 printable ASCII chars |
 | `QM,<dst>,<code>` | send a quick message |
 | `AK,<dst>,<seq>` | confirm we received message `seq` from `dst` |

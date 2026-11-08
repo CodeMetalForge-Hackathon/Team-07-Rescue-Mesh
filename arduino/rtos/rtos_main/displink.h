@@ -11,10 +11,12 @@
 // Addresses on this bus: SHT41 0x44, ESP32 screen 0x42, the ESP board's own battery monitor 0x36.
 //
 // Lines (text always last so it may contain commas):
-//   D,STATUS,<id>,<mode>,<temp|->,<rh|->,<flag R/S/->
-//   D,MSG,<from>,<rssi|0>,<text>
-//   D,NODE,<id>,<rssi>
-//   D,PAGE
+//   D,STATUS,<id>,<mode>,<temp|->,<rh|->,<flag R/S/->     header
+//   D,MSG,<from>,<rssi|0>,<text>                         message received
+//   D,SENT,<seq>,<text>                                  we sent something (waits for ACKs)
+//   D,ACK,<seq>,<by>                                     <by> confirmed our <seq>; "-" = nobody did
+//   D,NODE,<id>,<rssi>                                   heard a box (bottom strip)
+//   D,WARN,<text>                                        warning banner ('|' = line break); empty clears it
 // Each line is sent as: 0x02 (start marker) + text + '\n', split into 30-byte I2C writes
 // (the ESP32's I2C receive buffer is 128 bytes). Only the task that owns Wire may call displinkSend().
 #pragma once
@@ -24,25 +26,25 @@
 #define DISPLAY_I2C_ADDR 0x42
 #define DISPLAY_CHUNK    30
 
-enum DispType : uint8_t { D_MSG, D_NODE, D_STATUS, D_PAGE };
+enum DispType : uint8_t { D_MSG, D_SENT, D_ACK, D_NODE, D_STATUS, D_WARN };
 struct DispMsg {
   DispType type;
-  char from[9];       // D_MSG: sender ("BASE", "BRAVO", "YOU") | D_NODE: box id
-  char text[150];     // D_MSG: message | D_STATUS: mode ("CARRY"/"DEPLOY"/"BASE")
-  int16_t rssi;       // D_MSG / D_NODE (0 = not applicable)
-  float temp, rh;     // D_STATUS
-  uint8_t flag;       // D_STATUS: 1 = real reading, 0 = simulated, 2 = none yet
+  char from[9];       // MSG: sender | ACK: who confirmed ("-" = nobody) | NODE: box id
+  char text[64];      // MSG/SENT/WARN: text (max 60) | STATUS: mode ("CARRY"/"DEPLOY"/"BASE")
+  int16_t rssi;       // MSG / NODE (0 = not applicable)
+  uint16_t seq;       // SENT / ACK
+  float temp, rh;     // STATUS
+  uint8_t flag;       // STATUS: 1 = real reading, 0 = simulated, 2 = none yet
 };
 
 // Turn a DispMsg into one text line (no newline).
 inline void displinkFormat(const DispMsg& m, const char* myId, char* line, int max) {
   switch (m.type) {
-    case D_MSG:
-      snprintf(line, max, "D,MSG,%s,%d,%s", m.from, m.rssi, m.text);
-      break;
-    case D_NODE:
-      snprintf(line, max, "D,NODE,%s,%d", m.from, m.rssi);
-      break;
+    case D_MSG:  snprintf(line, max, "D,MSG,%s,%d,%s", m.from, m.rssi, m.text); break;
+    case D_SENT: snprintf(line, max, "D,SENT,%u,%s", m.seq, m.text); break;
+    case D_ACK:  snprintf(line, max, "D,ACK,%u,%s", m.seq, m.from); break;
+    case D_NODE: snprintf(line, max, "D,NODE,%s,%d", m.from, m.rssi); break;
+    case D_WARN: snprintf(line, max, "D,WARN,%s", m.text); break;
     case D_STATUS:
       if (m.flag == 2) {
         snprintf(line, max, "D,STATUS,%s,%s,-,-,-", myId, m.text);
@@ -52,15 +54,12 @@ inline void displinkFormat(const DispMsg& m, const char* myId, char* line, int m
                  t10 < 0 ? "-" : "", labs(t10) / 10, labs(t10) % 10, h, m.flag ? "R" : "S");
       }
       break;
-    case D_PAGE:
-      snprintf(line, max, "D,PAGE");
-      break;
   }
 }
 
 // Send one line to the screen. Returns false if the screen didn't answer (not connected / not running).
 inline bool displinkSend(const char* line) {
-  uint8_t buf[240];
+  uint8_t buf[128];
   size_t n = strlen(line);
   if (n > sizeof buf - 2) n = sizeof buf - 2;
   buf[0] = 0x02;                       // start marker: the screen drops any half-received line

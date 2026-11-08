@@ -36,23 +36,33 @@ power: RP2040 USB pin -- ESP32 USB pin  (one USB cable for both; NOT 3V to 3V)
 - **The ESP32 prints every line it receives** (`rx: D,...`) on its own USB Serial Monitor (115200), which helps when debugging.
 - **ESP32 IDE setup:** in Boards Manager install **esp32** by Espressif, then select the board **Adafruit Feather ESP32-S3 Reverse TFT**.
   Install the library **Adafruit ST7735 and ST7789 Library** (click Install all).
-- **Pages** (long press **button 2** on the RP2040 box to switch):
-  - **MAIN**: header (name, mode in colour, temperature), the newest message (3 lines), the previous message, and the boxes heard with signal bars
-  - **NEARBY**: every box heard, with bars, RSSI and age (grey when nothing has been heard for 30 s)
-  - **STATUS**: name, mode, temperature, humidity, boxes heard, message count
-- A **long message** fills the whole screen for 20 s.
+- **One messaging screen:**
+  - **Header:** box name, mode (orange CARRY / green DEPLOY / blue BASE), temperature.
+  - **Newest message:** sender, age and 3 lines of text. For your own messages it shows the
+    confirmation status: `...` while waiting, `√BASE` or `√BASE+1` once confirmed, `no reply` after 10 s.
+  - **Previous message**, on one line.
+  - **Bottom:** boxes heard, with signal bars. In CARRY mode with a weak link, this becomes a blinking red **WEAK LINK / DEPLOY A RELAY** banner.
+- A **long incoming message** fills the whole screen for 20 s.
 - A **HELP** from another box shows a blinking **red screen** for 20 s, or until the next message.
 - A red **"WAITING FOR BOX" / "NO LINK TO BOX"** bar means nothing has arrived from the RP2040 for 15 s. Check the SDA/SCL/GND wires and that the RP2040 is running `rtos_main`.
 - Text uses size 2 (about 1.6 mm tall). That's the smallest that's readable on a 1.14" screen.
 
-## Buttons and switch
-| Input | Does |
+## Buttons, switch, LED bar, buzzer
+| Input / output | Does |
 |---|---|
-| Button 1 short | quick message **OK** |
-| Button 2 short | quick message **HELP**: the base app shows a red alert and other boxes beep 3× |
-| Button 2 hold (1.5 s) | next screen page |
-| Button 1 hold | placeholder (FOUND / calibrate later) |
+| **Red** button (button 1, D5/D6) | **HELP** to everyone. Its LED blinks until someone confirms, then stays on 3 s. Fast blinking = nobody confirmed in 10 s. |
+| **Blue** button (button 2, D24/D25) | **OK** to everyone, with the same confirmation feedback |
 | Switch | CARRY / DEPLOY (flip `DEPLOY_LEVEL` if it's backwards) |
+| LED bar | **Signal strength** of the strongest box heard (10 = strong). Nobody heard = only the first (red) segment. Set `BAR_RED_FIRST 0` if your bar is mounted the other way round. |
+| Buzzer | 1 beep sent / confirmed · 2 beeps text received, or no reply · 3 beeps HELP received · **rapid bursts = CARRY mode with a weak link: deploy a relay** |
+
+- **Silent ping:** every 30 s each box sends a short ping with its role and temperature. There's no beep or
+  message. It keeps the LED bar, the screen's box list and the base app's network view up to date.
+- **Confirmations:** every box automatically confirms each text and quick message it receives.
+  When the base operator presses *Acknowledge* in the app, the box shows "HELP acknowledged - help is coming".
+- **CARRY alarm:** when the link to the deployed boxes or base falls to 30 % or below, the box beeps rapidly and shows DEPLOY A RELAY.
+  It stops at 40 %, or when you switch to DEPLOY. Signal readings are averaged, and with 30 s pings
+  the alarm can lag up to about a minute behind someone walking. `PING_EVERY_MS` is the setting that controls this.
 
 ## Base box
 Set `IS_BASE 1` and plug the box into the Pi or a laptop running `pi/base_station.py`.
@@ -60,7 +70,8 @@ Set `IS_BASE 1` and plug the box into the Pi or a laptop running `pi/base_statio
 - It prints `ME`, `DATA`, `MSG`, `QM`, `ACK` and `SENT` lines (see `PROTOCOL.md`).
 - Texts to `*` go to everyone; texts to a box ID go to that box only.
 - A field box confirms every text it receives, so the app shows ✓✓ delivered.
-- When the base acknowledges a HELP, that box shows "BASE got your msg".
+- When the base operator acknowledges a HELP, that box shows "HELP acknowledged - help is coming".
+- Type `STACKS` in the Serial Monitor to print the spare stack of each task and the free heap. We use this to size the M0 version.
 - The Serial Monitor can't be open while `base_station.py` is running, because both need the port.
 
 ## Task layout (`rtos_main`)
@@ -71,12 +82,10 @@ sensor  task (prio 1) --events-->      |        --packets-----> radio task (prio
 ```
 | Task | Owns | Does |
 |---|---|---|
-| `buttons` | both buttons, switch | 10 ms polling, debounce, short press / long press (1.5 s) / switch events |
-| `ui` | buzzer, button LEDs, LED bar | beeps, blink modes, bar levels; temporary states time out back to the base state |
+| `io` | buttons, switch, buzzer, button LEDs, LED bar, USB serial input | 10 ms loop: debounced button/switch events, beeps/alarm bursts, LED modes, bar level, command lines |
 | `i2c` | Wire: SHT41 + ESP32 screen | a reading every 5 s (simulated if the sensor is missing); sends screen messages to the ESP32 |
-| `serial` | USB serial input | reads command lines from the Pi app and hands them to the app |
 | `radio` | SPI + RFM95 | sends queued packets (3 s TX timeout, then radio restart) and reports received packets with RSSI/SNR |
-| app (`loop`) | nothing directly | decides what happens. Roles, relay, link meter and protocol will be added here. |
+| app (`loop`) | nothing directly | decides everything: messages, confirmations, pings, link meter, CARRY alarm |
 
 ## Rules
 1. **Each piece of hardware is used by one task only.** Arduino libraries aren't thread-safe.
@@ -89,9 +98,12 @@ sensor  task (prio 1) --events-->      |        --packets-----> radio task (prio
 ## Plan: features to move over from `../lora_sensor_node`, one at a time
 - [x] sensor packets (SN1), text (MS1), quick messages (QM1), acknowledgements (AK1)
 - [x] base-station serial protocol: `ME`, `DATA`, `MSG`, `QM`, `ACK`, `SENT`, and the `TX`/`QM`/`AK` commands
-- [x] screen on the ESP32-S3 TFT: main / nearby / status pages, full-screen long messages, HELP alert
+- [x] screen on the ESP32-S3 TFT: messaging screen, confirmation status, full-screen long messages, HELP alert, warning banner
+- [x] v1.1: silent ping (30 s), LED bar = signal strength, confirmations for every message, red = HELP / blue = OK, CARRY weak-link alarm, fewer tasks and smaller memory use
 - [ ] relay through other boxes + dedupe (for chains longer than one hop)
-- [ ] send each box's role over the radio (the app shows field boxes as role "?" for now) and `NBR` reports for the map
+- [x] each box's role is sent in its ping (the app shows C / D / B)
+- [ ] `NBR` neighbour reports for the map
+- [ ] M0 (SAMD21) port
 - [ ] CARRY/DEPLOY roles, chain numbering, beacons
 - [ ] LED bar link meter and buzzer range warning
 - [ ] quick messages with acknowledgement, and the base → box message panel

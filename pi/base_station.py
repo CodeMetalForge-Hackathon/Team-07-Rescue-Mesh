@@ -23,7 +23,7 @@ import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MAX_TEXT = 140
+MAX_TEXT = 60              # same limit as the boxes (proto.h)
 LINK_MAX_AGE_S = 90        # links older than this are ignored by the map
 STALE_S = 30               # node not heard for this long -> stale
 LOST_S = 90                # ... -> lost

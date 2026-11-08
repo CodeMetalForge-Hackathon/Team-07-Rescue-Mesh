@@ -16,8 +16,8 @@ namespace proto {
 
 const int HDR = 4;          // RadioHead-style header: to=FF from=FF id=0 flags=0
 const int ID_MAX = 8;
-const int MAX_TEXT = 140;
-const int MAX_PKT = 200;
+const int MAX_TEXT = 60;    // max message length (= 3 lines on the screen)
+const int MAX_PKT = 112;    // longest packet: 4 header + 100 (MS1 with 60-char text) + spare
 
 struct Pkt {
   char type[4];
