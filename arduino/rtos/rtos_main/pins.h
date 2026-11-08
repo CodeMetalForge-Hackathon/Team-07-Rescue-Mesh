@@ -12,4 +12,5 @@
 #define PIN_BTN2      25     // LED Button 2  white  / SIG2
 
 // Radio (fixed on the board): RFM95 on SPI, CS 16, RST 17, DIO0 21
-// SHT41 (and an OLED later) on STEMMA QT = Wire (SDA 2, SCL 3)
+// I2C (STEMMA QT) = Wire (SDA 2, SCL 3): SHT41 0x44, ESP32-S3 screen board 0x42
+// TX/RX (GPIO 0/1) are left free for your own digital I/O
